@@ -137,7 +137,7 @@ const MEDIAPIPE_HTML = `
         let poseInitError = null;
         for (const cdnBase of CDN_PATHS) {
           try {
-            post('log', `Trying CDN: ${cdnBase}`);
+            post('log', 'Trying CDN: ' + cdnBase);
             
             poseInstance = new Pose({
               locateFile: (file) => cdnBase + file
@@ -168,7 +168,7 @@ const MEDIAPIPE_HTML = `
             
           } catch (err) {
             poseInitError = err;
-            post('log', `CDN ${cdnBase} failed: ${err.message}`);
+            post('log', 'CDN ' + cdnBase + ' failed: ' + err.message);
             // Continue to next CDN
           }
         }
@@ -213,7 +213,7 @@ const MEDIAPIPE_HTML = `
         console.error('initMediaPipe 错误:', err);
         post('error', err.message || String(err));
         // 确保错误状态显示
-        post('log', `Initialization failed: ${err.message}`);
+        post('log', 'Initialization failed: ' + err.message);
       }
     }
 
