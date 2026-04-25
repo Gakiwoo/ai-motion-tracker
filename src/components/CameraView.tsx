@@ -149,6 +149,13 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
   const [cameraState, setCameraState] = useState<CameraState>('loading');
   const webViewRef = React.useRef<WebView>(null);
 
+  // isActive 切换时重置状态
+  useEffect(() => {
+    if (isActive) {
+      setCameraState('loading');
+    }
+  }, [isActive]);
+
   const handleMessage = useCallback((event: { nativeEvent: { data: string } }) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
@@ -174,30 +181,25 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
     return <View style={styles.container} />;
   }
 
-  if (cameraState === 'loading') {
-    return (
-      <View style={[styles.container, styles.centered]}>
-        <Text style={styles.loadingText}>正在初始化相机...</Text>
-        <Text style={styles.hintText}>请确保允许访问相机</Text>
-      </View>
-    );
-  }
-
-  if (cameraState === 'error') {
-    return (
-      <View style={[styles.container, styles.centered]}>
-        <Text style={styles.errorTitle}>无法访问相机</Text>
-        <Text style={styles.errorText}>请在设置中允许访问相机</Text>
-        <TouchableOpacity style={styles.settingsButton} onPress={handleOpenSettings}>
-          <Text style={styles.settingsButtonText}>打开设置</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
+      {cameraState === 'loading' && (
+        <View style={styles.overlay}>
+          <Text style={styles.loadingText}>正在初始化相机...</Text>
+          <Text style={styles.hintText}>请确保允许访问相机</Text>
+        </View>
+      )}
+      {cameraState === 'error' && (
+        <View style={styles.overlay}>
+          <Text style={styles.errorTitle}>无法访问相机</Text>
+          <Text style={styles.errorText}>请在设置中允许访问相机</Text>
+          <TouchableOpacity style={styles.settingsButton} onPress={handleOpenSettings}>
+            <Text style={styles.settingsButtonText}>打开设置</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       <WebView
+        key={isActive ? 'camera-active' : 'camera-inactive'}
         ref={webViewRef}
         source={{ html: MEDIAPIPE_HTML }}
         style={styles.webview}
@@ -208,7 +210,6 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
         allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
         onLoadEnd={() => {
-          // 设置初始帧率
           webViewRef.current?.injectJavaScript(
             `window.postMessage(JSON.stringify({type:'setThrottle',interval:${throttleMs}}), '*');`
           );
@@ -228,6 +229,13 @@ const styles = StyleSheet.create({
   centered: {
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+    zIndex: 1,
   },
   loadingText: {
     color: '#fff',
