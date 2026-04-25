@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "expo": "~55.0.17",
-    "expo-av": "~15.0.2",
+    "expo-av": "~16.0.0",
     "expo-camera": "~55.0.16",
     "expo-linking": "~55.0.14",
     "expo-status-bar": "~55.0.5",
