@@ -125,7 +125,7 @@ const MEDIAPIPE_HTML = `
 
     async function init() {
       try {
-        post('log', '开始初始化 MediaPipe...');
+        post('log', 'Starting MediaPipe initialization...');
         
         // CDN 回退策略
         const CDN_PATHS = [
@@ -137,7 +137,7 @@ const MEDIAPIPE_HTML = `
         let poseInitError = null;
         for (const cdnBase of CDN_PATHS) {
           try {
-            post('log', `尝试 CDN: ${cdnBase}`);
+            post('log', `Trying CDN: ${cdnBase}`);
             
             poseInstance = new Pose({
               locateFile: (file) => cdnBase + file
@@ -154,7 +154,7 @@ const MEDIAPIPE_HTML = `
 
             poseInstance.onResults(drawResults);
             
-            post('log', 'Pose 实例创建成功，正在初始化模型...');
+            post('log', 'Pose instance created, initializing model...');
             
             // 设置 canvas 尺寸
             canvas.width = window.innerWidth;
@@ -162,19 +162,19 @@ const MEDIAPIPE_HTML = `
             
             // 初始化 Pose 模型（下载 WASM + 模型文件）
             await poseInstance.initialize();
-            post('log', 'Pose 模型初始化成功');
+            post('log', 'Pose model initialized successfully');
             poseInitError = null;
             break; // 成功则跳出循环
             
           } catch (err) {
             poseInitError = err;
-            post('log', `CDN ${cdnBase} 失败: ${err.message}`);
-            // 继续尝试下一个 CDN
+            post('log', `CDN ${cdnBase} failed: ${err.message}`);
+            // Continue to next CDN
           }
         }
         
         if (poseInitError) {
-          throw new Error(`所有 CDN 尝试均失败: ${poseInitError.message}`);
+          throw new Error(`All CDN attempts failed: ${poseInitError.message}`);
         }
 
         // 检查 Camera 类是否可用
@@ -182,7 +182,7 @@ const MEDIAPIPE_HTML = `
           throw new Error('Camera 类未定义，请检查 camera_utils.js 加载');
         }
         
-        post('log', '正在启动摄像头...');
+        post('log', 'Starting camera...');
         
         // 启动摄像头
         cameraInstance = new Camera(video, {
@@ -197,7 +197,7 @@ const MEDIAPIPE_HTML = `
         });
 
         await cameraInstance.start();
-        post('log', '摄像头启动成功');
+        post('log', 'Camera started successfully');
 
         isReady = true;
         post('ready', null);
@@ -213,7 +213,7 @@ const MEDIAPIPE_HTML = `
         console.error('initMediaPipe 错误:', err);
         post('error', err.message || String(err));
         // 确保错误状态显示
-        post('log', `初始化失败: ${err.message}`);
+        post('log', `Initialization failed: ${err.message}`);
       }
     }
 
