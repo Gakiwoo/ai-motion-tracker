@@ -1,0 +1,11 @@
+node_modules/
+.expo/
+*.jks
+*.keystore
+!debug.keystore
+*.log
+.env
+.env.*
+eas-build-*/
+dist/
+npm-debug.*

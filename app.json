@@ -37,6 +37,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "65ffbfbe-0bfe-4a4b-8eee-79ecf40bdd15"
+      }
+    },
+    "owner": "gakiwoo1006"
   }
 }
