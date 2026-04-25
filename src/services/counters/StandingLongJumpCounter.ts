@@ -121,6 +121,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
     this.jumpDistanceCm = 0;
     this.stabilityWindow.clear();
     this.calibrationRequired = true;
+    this.calibration.calibrated = false;
     this.kneeAngleFilter.reset(180);
     this.ankleXFilter.reset(0.5);
     this.ankleYFilter.reset(0.8);

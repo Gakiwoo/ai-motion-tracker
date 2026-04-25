@@ -9,3 +9,22 @@ node_modules/
 eas-build-*/
 dist/
 npm-debug.*
+
+# MediaPipe binary assets (deployed to gakiwoo.com CDN)
+mediapipe-staging/
+mediapipe-upload/
+
+# Build / temp
+tsc_output.txt
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI agent workspace
+.workbuddy/

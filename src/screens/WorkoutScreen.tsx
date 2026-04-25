@@ -45,6 +45,8 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
   const [currentFeedback, setCurrentFeedback] = useState<FormFeedback | null>(null);
   const hasShownCompletionRef = useRef(false);
   const startTimeRef = useRef<number | null>(null);
+  const prevFeedbackMsgRef = useRef<string | null>(null);
+  const handleStopRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const countdownAnim = useRef(new Animated.Value(1)).current;
   const [elapsed, setElapsed] = useState(0);
 
@@ -100,17 +102,26 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
     }
   }, [count, targetCount, isActive, mode, playSuccess]);
 
-  // Auto-stop on timeUp (timed mode)
+  // Auto-stop on timeUp (timed mode) — 使用 ref 避免 handleStop 闭包问题
   useEffect(() => {
     if (timeUp && isActive) {
-      handleStop();
+      handleStopRef.current();
     }
-  }, [timeUp]);
+  }, [timeUp, isActive]);
 
   const handlePoseDetected = useCallback((pose: Pose) => {
     processFrame(pose);
     const feedback = getFeedback(pose, exerciseType);
-    setCurrentFeedback(feedback);
+    // 反馈去重：只在消息内容变化时更新 state，避免每帧无效重渲染
+    if (feedback) {
+      if (feedback.message !== prevFeedbackMsgRef.current) {
+        prevFeedbackMsgRef.current = feedback.message;
+        setCurrentFeedback(feedback);
+      }
+    } else if (prevFeedbackMsgRef.current !== null) {
+      prevFeedbackMsgRef.current = null;
+      setCurrentFeedback(null);
+    }
   }, [processFrame, getFeedback, exerciseType]);
 
   const handleStart = () => {
@@ -120,6 +131,7 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
 
   const handleStop = async () => {
     setCurrentFeedback(null);
+    prevFeedbackMsgRef.current = null;
     const { session, saved } = await stop();
 
     if (saved && session) {
@@ -137,6 +149,8 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
       );
     }
   };
+  // 保持 ref 同步，供 useEffect 中的 timeUp 自动停止使用
+  handleStopRef.current = handleStop;
 
   const handleSetTarget = () => {
     const target = parseInt(targetInput, 10);
@@ -179,7 +193,7 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
       <CameraView onPoseDetected={handlePoseDetected} isActive={isActive} />
-      <View style={[styles.overlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 16 }]}>
+      <View style={[styles.overlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">
         {/* ── 顶部栏 ── */}
         <View style={styles.topRow}>
           <View style={styles.namePill}>

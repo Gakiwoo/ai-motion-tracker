@@ -30,6 +30,7 @@ export function useWorkout(exerciseType: ExerciseType) {
   const [timeUp, setTimeUp] = useState(false);
   const [counter] = useState<ExerciseCounter>(() => createCounter(exerciseType));
   const startTimeRef = useRef<number | null>(null);
+  const prevCountRef = useRef(0);
 
   // 定时模式：时间到自动停止
   useEffect(() => {
@@ -47,12 +48,17 @@ export function useWorkout(exerciseType: ExerciseType) {
   const processFrame = useCallback((pose: Pose) => {
     if (isActive) {
       counter.processFrame(pose);
-      setCount(counter.getCount());
+      const newCount = counter.getCount();
+      if (newCount !== prevCountRef.current) {
+        prevCountRef.current = newCount;
+        setCount(newCount);
+      }
     }
   }, [isActive, counter]);
 
   const start = useCallback(() => {
     counter.reset();
+    prevCountRef.current = 0;
     setCount(0);
     setIsActive(true);
     setTimeUp(false);

@@ -1,7 +1,9 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Linking, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Linking, Platform, ScrollView } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
+import { Camera } from 'expo-camera';
 import { Pose } from '../types';
+import { mediaPipeAssetService } from '../services/MediaPipeAssetService';
 
 interface CameraViewProps {
   onPoseDetected: (pose: Pose) => void;
@@ -11,14 +13,26 @@ interface CameraViewProps {
 }
 
 // ── WebView 内嵌 HTML：MediaPipe Pose + Camera ──
+//
+// 架构演进（v3）：
+//   v1: 静态 <script src="CDN"> → CDN 失败无容错
+//   v2: 动态 createElement('script') + CDN 回退 → 国内 CDN 全挂
+//   v3: RN 侧通过 MediaPipeAssetService 缓存文件 → 注入为 blob: URL
+//       - blob: URL 与页面同源，无 CORS 问题
+//       - 首次从 gakiwoo.com 下载后永久缓存，零网络依赖
+//       - CDN 仅作为缓存不存在时的最终回退
+//
+// 关键约束：
+//   - baseUrl 必须是 https://localhost（安全上下文，getUserMedia 需要）
+//   - 不能用 file:// URL 加载资源（https→file CORS 阻止）
+//   - blob: URL 是唯一能在 https://localhost 页面中加载本地数据的方式
+//
+// JS 全部使用 var + 字符串拼接（避免 EAS 构建环境模板字符串解析问题）
 const MEDIAPIPE_HTML = `
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <script src="https://registry.npmmirror.com/@mediapipe/camera_utils/files/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://registry.npmmirror.com/@mediapipe/drawing_utils/files/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://registry.npmmirror.com/@mediapipe/pose/files/pose.js" crossorigin="anonymous"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
@@ -30,42 +44,77 @@ const MEDIAPIPE_HTML = `
   <video id="video" playsinline autoplay muted></video>
   <canvas id="canvas"></canvas>
   <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
+    var video = document.getElementById('video');
+    var canvas = document.getElementById('canvas');
+    var ctx = canvas.getContext('2d');
 
-    const KEYPOINT_NAMES = [
+    var KEYPOINT_NAMES = [
       'nose','left_eye','right_eye','left_ear','right_ear',
       'left_shoulder','right_shoulder','left_elbow','right_elbow',
       'left_wrist','right_wrist','left_hip','right_hip',
       'left_knee','right_knee','left_ankle','right_ankle'
     ];
 
-    const SKELETON_CONNECTIONS = [
+    var SKELETON_CONNECTIONS = [
       [11,12],[11,13],[13,15],[12,14],[14,16],
       [11,23],[12,24],[23,24],
       [23,25],[25,27],[24,26],[26,28]
     ];
 
-    let poseInstance = null;
-    let cameraInstance = null;
-    let lastPoseData = null;
-    let sendInterval = 100;
-    let lastSendTime = 0;
-    let isReady = false;
+    var poseInstance = null;
+    var lastPoseData = null;
+    var sendInterval = 100;
+    var lastSendTime = 0;
+    var isReady = false;
+    var animFrameId = null;
+    var shouldProcessPose = false;
+    var shouldSendPose = false;
+
+    // blob: URL 注册表（由 RN 注入的本地文件数据创建）
+    var blobRegistry = {};
 
     function post(type, data) {
       try {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type, data }));
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: type, data: data }));
       } catch(e) {}
     }
 
+    // ── 由 RN 调用：注册一个 blob URL ──
+    // RN 侧通过 injectJavaScript 调用此函数，传入 base64 编码的文件数据
+    window.__registerBlob = function(filename, base64Data, mimeType) {
+      try {
+        var binary = atob(base64Data);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        var blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+        var url = URL.createObjectURL(blob);
+        blobRegistry[filename] = url;
+        post('log', 'Registered blob: ' + filename + ' (' + bytes.length + ' bytes)');
+      } catch(e) {
+        post('log', 'Failed to register blob: ' + filename + ' - ' + e.message);
+      }
+    };
+
+    // ── 由 RN 调用：注入并执行 pose.js ──
+    window.__evalPoseJs = function(base64Data) {
+      try {
+        var jsCode = atob(base64Data);
+        post('log', 'Evaluating pose.js (' + jsCode.length + ' chars)');
+        eval(jsCode);
+        post('log', 'pose.js evaluated successfully');
+      } catch(e) {
+        post('log', 'Failed to eval pose.js: ' + e.message);
+        throw e;
+      }
+    };
+
     function drawResults(results) {
-      const W = canvas.width;
-      const H = canvas.height;
+      var W = canvas.width;
+      var H = canvas.height;
       ctx.clearRect(0, 0, W, H);
 
-      // 镜像绘制视频帧
       ctx.save();
       ctx.scale(-1, 1);
       ctx.translate(-W, 0);
@@ -77,32 +126,30 @@ const MEDIAPIPE_HTML = `
         return;
       }
 
-      const lm = results.poseLandmarks;
+      var lm = results.poseLandmarks;
+      var pts = [];
+      for (var i = 0; i < lm.length; i++) {
+        pts.push({ x: (1 - lm[i].x) * W, y: lm[i].y * H, v: lm[i].visibility, n: KEYPOINT_NAMES[i] || ('kp_' + i) });
+      }
 
-      // 绘制骨架线
       ctx.strokeStyle = '#00FF88';
       ctx.lineWidth = 3;
       ctx.lineCap = 'round';
-      for (const [i, j] of SKELETON_CONNECTIONS) {
-        const a = lm[i], b = lm[j];
-        if (a.visibility > 0.3 && b.visibility > 0.3) {
-          // 镜像 x 坐标
-          const ax = (1 - a.x) * W, ay = a.y * H;
-          const bx = (1 - b.x) * W, by = b.y * H;
+      for (var k = 0; k < SKELETON_CONNECTIONS.length; k++) {
+        var pair = SKELETON_CONNECTIONS[k];
+        var a = pts[pair[0]], b = pts[pair[1]];
+        if (a.v > 0.3 && b.v > 0.3) {
           ctx.beginPath();
-          ctx.moveTo(ax, ay);
-          ctx.lineTo(bx, by);
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
           ctx.stroke();
         }
       }
 
-      // 绘制关键点
-      for (let i = 0; i < lm.length; i++) {
-        if (lm[i].visibility > 0.3) {
-          const x = (1 - lm[i].x) * W;
-          const y = lm[i].y * H;
+      for (var i = 0; i < pts.length; i++) {
+        if (pts[i].v > 0.3) {
           ctx.beginPath();
-          ctx.arc(x, y, 5, 0, 2 * Math.PI);
+          ctx.arc(pts[i].x, pts[i].y, 5, 0, 2 * Math.PI);
           ctx.fillStyle = i <= 10 ? '#FF3B30' : '#FFD60A';
           ctx.fill();
           ctx.strokeStyle = '#FFF';
@@ -111,134 +158,227 @@ const MEDIAPIPE_HTML = `
         }
       }
 
-      // 构建发送数据
-      lastPoseData = {
-        keypoints: lm.map((pt, idx) => ({
-          x: (1 - pt.x) * W,
-          y: pt.y * H,
-          score: pt.visibility,
-          name: KEYPOINT_NAMES[idx] || ('kp_' + idx)
-        })),
-        score: 0.9
-      };
+      var keypoints = [];
+      for (var j = 0; j < pts.length; j++) {
+        keypoints.push({ x: pts[j].x, y: pts[j].y, score: pts[j].v, name: pts[j].n });
+      }
+      lastPoseData = { keypoints: keypoints, score: 0.9 };
+    }
+
+    function drawVideoOnly() {
+      if (!video || video.paused || video.ended) return;
+      var W = canvas.width;
+      var H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.translate(-W, 0);
+      ctx.drawImage(video, 0, 0, W, H);
+      ctx.restore();
+    }
+
+    async function startCamera() {
+      post('log', 'Checking navigator.mediaDevices...');
+      if (!navigator.mediaDevices) {
+        throw new Error('navigator.mediaDevices is undefined - page is not a secure context');
+      }
+      post('log', 'Requesting camera via getUserMedia...');
+      var stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      post('log', 'Camera stream obtained, video playing');
+
+      canvas.width = video.videoWidth || 480;
+      canvas.height = video.videoHeight || 360;
+
+      function processFrame() {
+        if (!video || video.paused || video.ended) {
+          animFrameId = requestAnimationFrame(processFrame);
+          return;
+        }
+        if (shouldProcessPose && poseInstance) {
+          poseInstance.send({ image: video }).then(function() {
+            animFrameId = requestAnimationFrame(processFrame);
+          }).catch(function(err) {
+            post('log', 'Pose send error: ' + (err.message || String(err)));
+            animFrameId = requestAnimationFrame(processFrame);
+          });
+        } else {
+          drawVideoOnly();
+          animFrameId = requestAnimationFrame(processFrame);
+        }
+      }
+      animFrameId = requestAnimationFrame(processFrame);
+    }
+
+    // ── CDN 回退加载（仅在本地缓存不可用时使用） ──
+    var CDN_BASES = [
+      'https://gakiwoo.com/static/mediapipe/pose/',
+      'https://registry.npmmirror.com/@mediapipe/pose/0.5.1675469404/files/',
+      'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/',
+      'https://unpkg.com/@mediapipe/pose@0.5.1675469404/'
+    ];
+
+    function loadScript(url, timeoutMs) {
+      return new Promise(function(resolve, reject) {
+        var s = document.createElement('script');
+        s.src = url;
+        var timer = setTimeout(function() {
+          s.onload = null; s.onerror = null;
+          if (s.parentNode) s.parentNode.removeChild(s);
+          reject(new Error('Script load timeout: ' + url));
+        }, timeoutMs || 10000);
+        s.onload = function() { clearTimeout(timer); resolve(); };
+        s.onerror = function() { clearTimeout(timer); if (s.parentNode) s.parentNode.removeChild(s); reject(new Error('Script load failed: ' + url)); };
+        document.head.appendChild(s);
+      });
+    }
+
+    async function initFromLocal() {
+      // 使用 RN 注入的 blob: URL 初始化
+      if (typeof Pose === 'undefined') {
+        throw new Error('Pose class not loaded - pose.js was not injected');
+      }
+
+      post('cdnStatus', '初始化 AI 模型（本地）...');
+      post('log', 'Creating Pose instance with local blob URLs');
+
+      poseInstance = new Pose({
+        locateFile: function(file) {
+          if (blobRegistry[file]) {
+            return blobRegistry[file];
+          }
+          post('log', 'WARNING: No blob for ' + file + ', falling back to CDN');
+          return CDN_BASES[0] + file;
+        }
+      });
+      poseInstance.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        smoothSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      poseInstance.onResults(drawResults);
+      post('log', 'Pose instance created, initializing model...');
+      await poseInstance.initialize();
+      post('log', 'Pose model initialized from local cache');
+    }
+
+    async function initFromCdn() {
+      // CDN 回退：逐个尝试
+      var activeCdnBase = null;
+      for (var i = 0; i < CDN_BASES.length; i++) {
+        var cdnBase = CDN_BASES[i];
+        var scriptUrl = cdnBase + 'pose.js';
+        var host = cdnBase.split('/')[2];
+        try {
+          post('log', 'Loading pose.js from CDN: ' + scriptUrl);
+          post('cdnStatus', '尝试 CDN ' + (i + 1) + '/' + CDN_BASES.length + ': ' + host);
+          await loadScript(scriptUrl, 10000);
+          activeCdnBase = cdnBase;
+          post('log', 'pose.js loaded from: ' + host);
+          break;
+        } catch (e) {
+          post('log', 'CDN failed: ' + host + ' - ' + (e.message || String(e)));
+        }
+      }
+
+      if (!activeCdnBase) {
+        throw new Error('All CDN attempts failed. Please check your network connection.');
+      }
+
+      if (typeof Pose === 'undefined') {
+        throw new Error('Pose class not loaded after CDN script load');
+      }
+
+      post('cdnStatus', '初始化 AI 模型（CDN）...');
+      poseInstance = new Pose({
+        locateFile: function(file) { return activeCdnBase + file; }
+      });
+      poseInstance.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        smoothSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      poseInstance.onResults(drawResults);
+      await poseInstance.initialize();
+      post('log', 'Pose model initialized from CDN: ' + activeCdnBase);
     }
 
     async function init() {
       try {
         post('log', 'Starting MediaPipe initialization...');
-        
-        // CDN 回退策略
-        const CDN_PATHS = [
-          'https://cdn.jsdelivr.net/npm/@mediapipe/pose/',
-          'https://unpkg.com/@mediapipe/pose/',
-          'https://registry.npmmirror.com/@mediapipe/pose/files/'
-        ];
-        
-        let poseInitError = null;
-        for (const cdnBase of CDN_PATHS) {
-          try {
-            post('log', 'Trying CDN: ' + cdnBase);
-            
-            poseInstance = new Pose({
-              locateFile: (file) => cdnBase + file
-            });
+        post('log', 'Blob registry has ' + Object.keys(blobRegistry).length + ' files');
 
-            poseInstance.setOptions({
-              modelComplexity: 1,
-              smoothLandmarks: true,
-              enableSegmentation: false,
-              smoothSegmentation: false,
-              minDetectionConfidence: 0.5,
-              minTrackingConfidence: 0.5
-            });
-
-            poseInstance.onResults(drawResults);
-            
-            post('log', 'Pose instance created, initializing model...');
-            
-            // 设置 canvas 尺寸
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-            
-            // 初始化 Pose 模型（下载 WASM + 模型文件）
-            await poseInstance.initialize();
-            post('log', 'Pose model initialized successfully');
-            poseInitError = null;
-            break; // 成功则跳出循环
-            
-          } catch (err) {
-            poseInitError = err;
-            post('log', 'CDN ' + cdnBase + ' failed: ' + err.message);
-            // Continue to next CDN
-          }
-        }
-        
-        if (poseInitError) {
-          throw new Error(`All CDN attempts failed: ${poseInitError.message}`);
+        // 优先使用本地 blob URL（如果 RN 已注入）
+        if (Object.keys(blobRegistry).length > 0 && typeof Pose !== 'undefined') {
+          await initFromLocal();
+        } else if (typeof Pose !== 'undefined') {
+          // pose.js 已注入但 blob 不全，仍尝试本地
+          await initFromLocal();
+        } else {
+          // pose.js 未注入 → 回退到 CDN
+          post('log', 'Local blobs not available, falling back to CDN');
+          await initFromCdn();
         }
 
-        // 检查 Camera 类是否可用
-        if (typeof Camera === 'undefined') {
-          throw new Error('Camera 类未定义，请检查 camera_utils.js 加载');
+        // 检查安全上下文
+        if (!navigator.mediaDevices) {
+          throw new Error('navigator.mediaDevices is undefined (not a secure context)');
         }
-        
-        post('log', 'Starting camera...');
-        
-        // 启动摄像头
-        cameraInstance = new Camera(video, {
-          onFrame: async () => {
-            if (poseInstance) {
-              await poseInstance.send({ image: video });
-            }
-          },
-          width: 480,
-          height: 360,
-          facingMode: 'user'
-        });
 
-        await cameraInstance.start();
-        post('log', 'Camera started successfully');
+        post('cdnStatus', '启动相机...');
+        await startCamera();
 
         isReady = true;
         post('ready', null);
-        
-        // 发送版本信息用于调试
-        try {
-          if (poseInstance.version) {
-            post('log', `MediaPipe Pose 版本: ${poseInstance.version}`);
-          }
-        } catch (e) {}
-
+        post('log', 'Camera and Pose fully ready');
       } catch (err) {
-        console.error('initMediaPipe 错误:', err);
-        post('error', err.message || String(err));
-        // 确保错误状态显示
-        post('log', 'Initialization failed: ' + err.message);
+        var errMsg = err.message || String(err);
+        post('log', 'Initialization failed: ' + errMsg);
+        post('error', errMsg);
       }
     }
 
-    // 帧发送定时器
-    setInterval(() => {
-      if (!isReady || !lastPoseData) return;
-      const now = Date.now();
-      if (now - lastSendTime >= sendInterval) {
-        lastSendTime = now;
-        post('pose', lastPoseData);
-      }
-    }, 50);
+    // ── 姿态数据发送（仅在 shouldSendPose 时发送） ──
+    var sendIntervalId = null;
+    function startSendInterval() {
+      if (sendIntervalId) clearInterval(sendIntervalId);
+      sendIntervalId = setInterval(function() {
+        if (!isReady || !lastPoseData || !shouldSendPose) return;
+        var now = Date.now();
+        if (now - lastSendTime >= sendInterval) {
+          lastSendTime = now;
+          post('pose', lastPoseData);
+        }
+      }, 50);
+    }
+    startSendInterval();
 
-    // 监听 RN 消息
-    window.addEventListener('message', (event) => {
+    // ── 接收 RN 控制消息 ──
+    window.addEventListener('message', function(event) {
       try {
-        const msg = JSON.parse(event.data);
+        var msg = JSON.parse(event.data);
         if (msg.type === 'setThrottle' && typeof msg.interval === 'number') {
           sendInterval = Math.max(50, Math.min(300, msg.interval));
+        }
+        if (msg.type === 'setActive') {
+          shouldProcessPose = !!msg.active;
+          shouldSendPose = !!msg.active;
+          post('log', 'Active state changed: ' + msg.active);
         }
       } catch (e) {}
     });
 
-    // 页面加载后初始化
-    init();
+    // init() 由 RN 侧在注入完 blob 数据后调用
   </script>
 </body>
 </html>
@@ -248,23 +388,118 @@ type CameraState = 'idle' | 'loading' | 'ready' | 'error';
 
 export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 }: CameraViewProps) {
   const [cameraState, setCameraState] = useState<CameraState>('idle');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [loadingDetail, setLoadingDetail] = useState<string>('准备中...');
   const webViewRef = useRef<WebView>(null);
   const isMountedRef = useRef(true);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cameraStateRef = useRef<CameraState>('idle');
+  const injectionDoneRef = useRef(false);
 
-  // 组件挂载后立即设为 loading
-  useEffect(() => {
-    isMountedRef.current = true;
-    setCameraState('loading');
-    
-    // 设置 30 秒超时
+  useEffect(() => { cameraStateRef.current = cameraState; }, [cameraState]);
+
+  const startTimeout = useCallback(() => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
-      if (isMountedRef.current && cameraState === 'loading') {
-        console.warn('[CameraView] 初始化超时（30 秒）');
+      if (isMountedRef.current) {
+        console.warn('[CameraView] Initialization timeout (120s)');
+        setErrorMessage('初始化超时，请检查网络连接后重试。可能原因：CDN 被墙或网络不稳定。');
         setCameraState('error');
       }
-    }, 30000);
-    
+    }, 120000);
+  }, []);
+
+  // ── 注入本地缓存的 MediaPipe 文件到 WebView ──
+  const injectLocalFiles = useCallback(async () => {
+    const webView = webViewRef.current;
+    if (!webView) return;
+
+    try {
+      const files = mediaPipeAssetService.getFiles();
+
+      // 注入 blob URL（先注入所有资源文件，再注入 pose.js）
+      for (const filename of files) {
+        if (filename === 'pose.js') continue; // pose.js 最后注入
+
+        try {
+          const base64 = await mediaPipeAssetService.getFileBase64(filename);
+          const mimeType = mediaPipeAssetService.getMimeType(filename);
+
+          // 分块注入大文件（避免 injectJavaScript 超长字符串问题）
+          // 每次注入一个文件
+          webView.injectJavaScript(
+            'window.__registerBlob("' + filename + '","' + base64 + '","' + mimeType + '");'
+          );
+        } catch (err) {
+          console.warn(`[CameraView] Failed to inject ${filename}:`, err);
+        }
+      }
+
+      // 注入 pose.js（通过 eval 执行）
+      try {
+        const poseJsBase64 = await mediaPipeAssetService.getFileBase64('pose.js');
+        webView.injectJavaScript(
+          'window.__evalPoseJs("' + poseJsBase64 + '");'
+        );
+      } catch (err) {
+        console.warn('[CameraView] Failed to inject pose.js:', err);
+      }
+
+      // 通知 WebView 开始初始化
+      webView.injectJavaScript('init();');
+      injectionDoneRef.current = true;
+    } catch (err) {
+      console.warn('[CameraView] Local injection failed, falling back to CDN:', err);
+      // 本地注入失败 → 回退到 CDN 加载
+      webView.injectJavaScript('init();');
+      injectionDoneRef.current = true;
+    }
+  }, []);
+
+  // 组件挂载时：请求权限 → 准备缓存 → 显示 WebView
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    async function requestPermissionAndStart() {
+      if (Platform.OS === 'android') {
+        try {
+          const { status } = await Camera.requestCameraPermissionsAsync();
+          if (status !== 'granted') {
+            if (isMountedRef.current) {
+              setErrorMessage('相机权限被拒绝，请在设置中授予权限');
+              setCameraState('error');
+            }
+            return;
+          }
+        } catch (err) {
+          console.warn('[CameraView] Permission request error:', err);
+        }
+      }
+
+      if (!isMountedRef.current) return;
+
+      // 确保本地缓存可用
+      setCameraState('loading');
+      setLoadingDetail('准备 AI 模型...');
+      startTimeout();
+
+      try {
+        await mediaPipeAssetService.ensureCached((message) => {
+          if (isMountedRef.current) {
+            setLoadingDetail(message);
+          }
+        });
+      } catch (err) {
+        console.warn('[CameraView] Cache preparation failed:', err);
+        // 缓存准备失败 → 仍然显示 WebView（会回退到 CDN）
+        if (isMountedRef.current) {
+          setLoadingDetail('本地缓存失败，尝试在线加载...');
+        }
+      }
+    }
+
+    requestPermissionAndStart();
+
     return () => {
       isMountedRef.current = false;
       if (timeoutRef.current) {
@@ -272,14 +507,37 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
         timeoutRef.current = null;
       }
     };
-  }, []);
+  }, [startTimeout]);
+
+  // 同步 isActive 到 WebView
+  useEffect(() => {
+    if (webViewRef.current && cameraState === 'ready') {
+      webViewRef.current.injectJavaScript(
+        'window.postMessage(JSON.stringify({type:"setActive",active:' + (isActive ? 'true' : 'false') + '}), "*");'
+      );
+    }
+  }, [isActive, cameraState]);
+
+  // WebView 加载完成后注入本地文件
+  const handleLoadEnd = useCallback(() => {
+    if (injectionDoneRef.current) return; // 避免重复注入
+
+    // 先发送控制参数
+    webViewRef.current?.injectJavaScript(
+      'window.postMessage(JSON.stringify({type:"setThrottle",interval:' + throttleMs + '}), "*");' +
+      'window.postMessage(JSON.stringify({type:"setActive",active:' + (isActive ? 'true' : 'false') + '}), "*");'
+    );
+
+    // 注入本地缓存的 MediaPipe 文件
+    injectLocalFiles();
+  }, [throttleMs, isActive, injectLocalFiles]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
       switch (message.type) {
         case 'pose':
-          if (message.data && isActive) {
+          if (message.data) {
             onPoseDetected(message.data);
           }
           break;
@@ -296,7 +554,15 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
             timeoutRef.current = null;
           }
           console.warn('[CameraView] MediaPipe error:', message.data);
-          if (isMountedRef.current) setCameraState('error');
+          if (isMountedRef.current) {
+            setErrorMessage(String(message.data || '未知错误'));
+            setCameraState('error');
+          }
+          break;
+        case 'cdnStatus':
+          if (isMountedRef.current && cameraStateRef.current === 'loading') {
+            setLoadingDetail(String(message.data || ''));
+          }
           break;
         case 'log':
           console.log('[CameraView]', message.data);
@@ -305,7 +571,7 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
     } catch (err) {
       // 忽略非 JSON 消息
     }
-  }, [onPoseDetected, isActive]);
+  }, [onPoseDetected]);
 
   const handleOpenSettings = () => {
     if (Platform.OS === 'ios') {
@@ -316,79 +582,75 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
   };
 
   const handleReload = () => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
+    setErrorMessage('');
+    setLoadingDetail('重新加载中...');
     setCameraState('loading');
+    injectionDoneRef.current = false;
+    startTimeout();
     webViewRef.current?.reload();
   };
 
+  const canShowWebView = cameraState !== 'idle';
+
   return (
     <View style={styles.container}>
-      {/* WebView 始终挂载 — 进入训练页即加载 MediaPipe */}
-      <WebView
-        ref={webViewRef}
-        source={{ html: MEDIAPIPE_HTML }}
-        style={styles.webview}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-        allowFileAccess={true}
-        allowFileAccessNetworking={true}
-        startInLoadingState={false}
-        onMessage={handleMessage}
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
-        sharedCookiesEnabled={false}
-        originWhitelist={['*']}
-        // 只在 WebView 完全加载后注入帧率配置
-        onLoadEnd={() => {
-          webViewRef.current?.injectJavaScript(
-            `window.postMessage(JSON.stringify({type:'setThrottle',interval:${throttleMs}}), '*');`
-          );
-        }}
-        onError={(syntheticEvent) => {
-          console.error('[CameraView] WebView error:', syntheticEvent.nativeEvent);
-        }}
-        onHttpError={(syntheticEvent) => {
-          console.warn('[CameraView] HTTP error:', syntheticEvent.nativeEvent);
-        }}
-        renderError={() => (
-          <View style={styles.overlay}>
-            <Text style={styles.errorTitle}>加载失败</Text>
-            <Text style={styles.errorText}>请检查网络连接后重试</Text>
-          </View>
-        )}
-      />
+      {canShowWebView && (
+        <WebView
+          ref={webViewRef}
+          source={{ html: MEDIAPIPE_HTML, baseUrl: 'https://localhost' }}
+          style={styles.webview}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          allowFileAccess={true}
+          startInLoadingState={false}
+          onMessage={handleMessage}
+          onLoadEnd={handleLoadEnd}
+          allowsInlineMediaPlayback={true}
+          mediaPlaybackRequiresUserAction={false}
+          sharedCookiesEnabled={false}
+          originWhitelist={['*']}
+          cacheEnabled={true}
+          androidLayerType="hardware"
+          onError={(syntheticEvent) => {
+            console.error('[CameraView] WebView error:', syntheticEvent.nativeEvent);
+          }}
+          onHttpError={(syntheticEvent) => {
+            console.warn('[CameraView] HTTP error:', syntheticEvent.nativeEvent);
+          }}
+          renderError={() => (
+            <View style={styles.overlay}>
+              <Text style={styles.errorTitle}>加载失败</Text>
+              <Text style={styles.errorText}>请检查网络连接后重试</Text>
+            </View>
+          )}
+        />
+      )}
 
-      {/* Loading overlay */}
       {cameraState === 'loading' && (
-        <View style={styles.overlay}>
+        <View style={styles.overlay} pointerEvents="none">
           <Text style={styles.loadingTitle}>正在初始化相机</Text>
-          <Text style={styles.loadingSub}>首次加载需要下载 AI 模型，请耐心等待...</Text>
+          <Text style={styles.loadingSub}>{loadingDetail}</Text>
+          <Text style={styles.loadingHint}>首次使用需下载 AI 模型，请耐心等待...</Text>
         </View>
       )}
 
-      {/* Error overlay */}
       {cameraState === 'error' && (
         <View style={styles.overlay}>
           <Text style={styles.errorTitle}>无法启动相机</Text>
-          <Text style={styles.errorText}>请确认已授予相机权限</Text>
+          <ScrollView style={styles.errorScroll} contentContainerStyle={styles.errorScrollContent}>
+            <Text style={styles.errorDetail}>{errorMessage || '请确认已授予相机权限'}</Text>
+          </ScrollView>
           <TouchableOpacity style={styles.settingsButton} onPress={handleOpenSettings}>
             <Text style={styles.settingsButtonText}>打开设置</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.retryButton}
-            onPress={handleReload}
-          >
+          <TouchableOpacity style={styles.retryButton} onPress={handleReload}>
             <Text style={styles.retryButtonText}>重试</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* Idle overlay（训练未开始时半透明遮罩） */}
       {cameraState === 'ready' && !isActive && (
-        <View style={[styles.overlay, styles.idleOverlay]}>
+        <View style={[styles.overlay, styles.idleOverlay]} pointerEvents="none">
           <Text style={styles.idleText}>相机就绪，点击「开始」进行训练</Text>
         </View>
       )}
@@ -422,8 +684,15 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   loadingSub: {
-    color: 'rgba(255,255,255,0.6)',
+    color: 'rgba(255,255,255,0.8)',
     fontSize: 14,
+    textAlign: 'center',
+    paddingHorizontal: 40,
+    marginBottom: 6,
+  },
+  loadingHint: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 12,
     textAlign: 'center',
     paddingHorizontal: 40,
   },
@@ -438,6 +707,19 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginBottom: 20,
     textAlign: 'center',
+  },
+  errorScroll: {
+    maxHeight: 80,
+    marginBottom: 16,
+  },
+  errorScrollContent: {
+    paddingHorizontal: 24,
+  },
+  errorDetail: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 12,
+    textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   settingsButton: {
     backgroundColor: '#007AFF',

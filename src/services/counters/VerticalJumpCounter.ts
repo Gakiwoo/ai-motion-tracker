@@ -136,6 +136,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
     this.jumpCount = 0;
     this.stabilityWindow.clear();
     this.calibrationRequired = true;
+    this.calibration.calibrated = false;
     this.kneeAngleFilter.reset(180);
     this.ankleYFilter.reset(0.8);
     this.hipYFilter.reset(0.5);
