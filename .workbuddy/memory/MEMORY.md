@@ -55,3 +55,14 @@
 - 沟通用中文，注重效率
 - 偏好精准代码修复而非大规模重构
 - 对接 Claude Code (claude-sonnet-4-6) 通过第三方代理
+
+## 相机初始化经验 (2026-04-25)
+- **关键问题**：安卓端进入训练页后卡在“正在初始化相机”，用户看到加载提示但无摄像头画面
+- **根本原因**：WebView 在 `isActive=false` 时未挂载，导致 MediaPipe 无法加载；模型下载可能因 CDN 阻塞而无限等待
+- **修复方案**：
+  1. WebView 始终挂载，不受 `isActive` 控制（仅控制 pose 数据转发）
+  2. 使用多 CDN 回退策略（jsdelivr → unpkg → npmmirror）应对网络问题
+  3. 添加 30 秒超时，超时后显示错误并提供重试按钮
+  4. 重试按钮触发 WebView 完全重新加载（`webViewRef.current?.reload()`）
+  5. 自绘骨骼替代 `drawingUtils` API，避免版本兼容性崩溃
+- **调试关键**：WebView 内通过 `post('log', ...)` 发送日志到 RN 控制台；`ready` 消息表示 Pose 模型和摄像头均已就绪

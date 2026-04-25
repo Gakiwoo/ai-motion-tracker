@@ -137,7 +137,7 @@ const MEDIAPIPE_HTML = `
         let poseInitError = null;
         for (const cdnBase of CDN_PATHS) {
           try {
-            post('log', `尝试 CDN: ${cdnBase}`);
+            post('log', `尝试 CDN: ${cdnBase}`);;
             
             poseInstance = new Pose({
               locateFile: (file) => cdnBase + file
