@@ -1,7 +1,7 @@
 # AI Sport 项目长期记忆
 
 ## 项目概况
-- **技术栈**: Expo 55 + React Native 0.73 + TypeScript + MediaPipe Pose (WebView CDN)
+- **技术栈**: Expo 55 + React Native 0.83 + React 19.2 + TypeScript + MediaPipe Pose (WebView CDN)
 - **产品**: 健身追踪 App，6 种运动（仰卧起坐/立定跳远/原地纵跳/跳绳/开合跳/深蹲）
 - **桌面版**: `ai-sport-desktop` 独立项目（HTML/CSS/JS）
 
