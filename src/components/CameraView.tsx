@@ -125,33 +125,65 @@ const MEDIAPIPE_HTML = `
 
     async function init() {
       try {
-        post('log', 'Creating Pose instance...');
+        post('log', '开始初始化 MediaPipe...');
+        
+        // CDN 回退策略
+        const CDN_PATHS = [
+          'https://cdn.jsdelivr.net/npm/@mediapipe/pose/',
+          'https://unpkg.com/@mediapipe/pose/',
+          'https://registry.npmmirror.com/@mediapipe/pose/files/'
+        ];
+        
+        let poseInitError = null;
+        for (const cdnBase of CDN_PATHS) {
+          try {
+            post('log', `尝试 CDN: ${cdnBase}`);
+            
+            poseInstance = new Pose({
+              locateFile: (file) => cdnBase + file
+            });
 
-        poseInstance = new Pose({
-          locateFile: (file) => 'https://registry.npmmirror.com/@mediapipe/pose/files/' + file
-        });
+            poseInstance.setOptions({
+              modelComplexity: 1,
+              smoothLandmarks: true,
+              enableSegmentation: false,
+              smoothSegmentation: false,
+              minDetectionConfidence: 0.5,
+              minTrackingConfidence: 0.5
+            });
 
-        poseInstance.setOptions({
-          modelComplexity: 1,
-          smoothLandmarks: true,
-          enableSegmentation: false,
-          smoothSegmentation: false,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
+            poseInstance.onResults(drawResults);
+            
+            post('log', 'Pose 实例创建成功，正在初始化模型...');
+            
+            // 设置 canvas 尺寸
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            // 初始化 Pose 模型（下载 WASM + 模型文件）
+            await poseInstance.initialize();
+            post('log', 'Pose 模型初始化成功');
+            poseInitError = null;
+            break; // 成功则跳出循环
+            
+          } catch (err) {
+            poseInitError = err;
+            post('log', `CDN ${cdnBase} 失败: ${err.message}`);
+            // 继续尝试下一个 CDN
+          }
+        }
+        
+        if (poseInitError) {
+          throw new Error(`所有 CDN 尝试均失败: ${poseInitError.message}`);
+        }
 
-        poseInstance.onResults(drawResults);
-
-        post('log', 'Pose instance created, initializing...');
-
-        // 设置 canvas 尺寸
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-
-        // 初始化 Pose 模型（下载 WASM + 模型文件）
-        await poseInstance.initialize();
-        post('log', 'Pose model initialized');
-
+        // 检查 Camera 类是否可用
+        if (typeof Camera === 'undefined') {
+          throw new Error('Camera 类未定义，请检查 camera_utils.js 加载');
+        }
+        
+        post('log', '正在启动摄像头...');
+        
         // 启动摄像头
         cameraInstance = new Camera(video, {
           onFrame: async () => {
@@ -165,14 +197,23 @@ const MEDIAPIPE_HTML = `
         });
 
         await cameraInstance.start();
-        post('log', 'Camera started');
+        post('log', '摄像头启动成功');
 
         isReady = true;
         post('ready', null);
+        
+        // 发送版本信息用于调试
+        try {
+          if (poseInstance.version) {
+            post('log', `MediaPipe Pose 版本: ${poseInstance.version}`);
+          }
+        } catch (e) {}
 
       } catch (err) {
-        console.error('initMediaPipe error:', err);
+        console.error('initMediaPipe 错误:', err);
         post('error', err.message || String(err));
+        // 确保错误状态显示
+        post('log', `初始化失败: ${err.message}`);
       }
     }
 
@@ -209,12 +250,28 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
   const [cameraState, setCameraState] = useState<CameraState>('idle');
   const webViewRef = useRef<WebView>(null);
   const isMountedRef = useRef(true);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // 组件挂载后立即设为 loading
   useEffect(() => {
     isMountedRef.current = true;
     setCameraState('loading');
-    return () => { isMountedRef.current = false; };
+    
+    // 设置 30 秒超时
+    timeoutRef.current = setTimeout(() => {
+      if (isMountedRef.current && cameraState === 'loading') {
+        console.warn('[CameraView] 初始化超时（30 秒）');
+        setCameraState('error');
+      }
+    }, 30000);
+    
+    return () => {
+      isMountedRef.current = false;
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    };
   }, []);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
@@ -227,9 +284,17 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
           }
           break;
         case 'ready':
+          if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+          }
           if (isMountedRef.current) setCameraState('ready');
           break;
         case 'error':
+          if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+          }
           console.warn('[CameraView] MediaPipe error:', message.data);
           if (isMountedRef.current) setCameraState('error');
           break;
@@ -248,6 +313,15 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
     } else {
       Linking.openSettings();
     }
+  };
+
+  const handleReload = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    setCameraState('loading');
+    webViewRef.current?.reload();
   };
 
   return (
@@ -305,7 +379,7 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.retryButton}
-            onPress={() => setCameraState('loading')}
+            onPress={handleReload}
           >
             <Text style={styles.retryButtonText}>重试</Text>
           </TouchableOpacity>
