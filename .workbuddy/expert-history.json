@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "sessions": {
+    "3bb03e8664894a32914e8858b942a1bd": [
+      {
+        "expertId": "SeniorDeveloper",
+        "name": "吴八哥",
+        "profession": "高级开发工程师",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/02-Engineering/SeniorDeveloper/SeniorDeveloper.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/02-Engineering/SeniorDeveloper/SeniorDeveloper_zh.md",
+        "usedAt": 1777026964875,
+        "industryId": "02-Engineering"
+      },
+      {
+        "expertId": "UiDesigner",
+        "name": "像素君",
+        "profession": "UI设计师",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/01-Design/UiDesigner/UiDesigner.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/01-Design/UiDesigner/UiDesigner_zh.md",
+        "usedAt": 1777024799084,
+        "industryId": "01-Design"
+      },
+      {
+        "expertId": "UserExperienceArchitect",
+        "name": "体验达",
+        "profession": "用户体验架构师",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/01-Design/UserExperienceArchitect/UserExperienceArchitect.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/01-Design/UserExperienceArchitect/UserExperienceArchitect_zh.md",
+        "usedAt": 1777009933969,
+        "industryId": "all"
+      }
+    ]
+  },
+  "lastUpdated": 1777027078607
+}

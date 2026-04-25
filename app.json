@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "AI运动助手",
+    "slug": "ai-motion-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aimotion.tracker",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "需要摄像头进行 AI 运动姿态检测，实时分析你的运动动作",
+        "NSMicrophoneUsageDescription": "运动训练录制时需要麦克风权限"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.aimotion.tracker",
+      "versionCode": 1,
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
