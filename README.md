@@ -17,9 +17,6 @@
 ---
 
 ## 🇬🇧 English
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/89da60ab-6843-4553-a962-771fd9b38a26" width="500" alt="AI Sport" />
-</p>
 
 AI Sport is a **mobile fitness tracking app** that uses **MediaPipe Pose** to detect and count exercises in real-time through your phone's camera — no wearables needed. Just face the camera and start working out.
 
@@ -27,6 +24,8 @@ AI Sport is a **mobile fitness tracking app** that uses **MediaPipe Pose** to de
   <img src="https://github.com/user-attachments/assets/152719fa-3bc6-4b12-860b-0b47b7759c5c" width="180" alt="1" />
   <img src="https://github.com/user-attachments/assets/96fac4a5-7793-44ec-bb44-1335af6b62d7" width="180" alt="2" />
   <img src="https://github.com/user-attachments/assets/371c9fa5-6828-42c0-8c43-643648c1ec0f" width="180" alt="3" />
+</p>
+<p align="center">
   <img src="https://github.com/user-attachments/assets/80e39e36-2637-45fd-8214-e8a424746b9a" width="180" alt="5" />
   <img src="https://github.com/user-attachments/assets/e4d7a239-96ed-414d-a614-84695495b932" width="180" alt="6" />
 </p>
