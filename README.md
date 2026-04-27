@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🏋️ AI Sport
+# 🏋️ AI Sport (AI-Motion-Tracker)
 
 **AI-Powered Fitness Tracking App** | **AI 驱动的健身追踪应用**
 
