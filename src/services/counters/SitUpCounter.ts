@@ -60,10 +60,10 @@ export class SitUpCounter extends ExerciseCounter {
   // 坐起时 ≈ 50°~80°（躯干前倾，肘触膝）
   private readonly LYING_ANGLE_MIN = 140;     // 角度 >= 此值 → 判定为仰卧
   private readonly UP_ANGLE_MAX = 85;         // 角度 <= 此值 → 判定为坐起到位
-  private readonly CONFIRM_FRAMES_LYING = 5;  // 连续 N 帧保持仰卧角度才确认
-  private readonly CONFIRM_FRAMES_UP = 4;     // 连续 N 帧保持坐起角度才确认
-  private readonly MIN_CYCLE_FRAMES = 12;     // 一次完整动作最少帧数（防抖，约 0.4s@30fps）
-  private readonly MAX_CYCLE_FRAMES = 90;     // 一次完整动作最多帧数（约 3s@30fps）
+  private readonly CONFIRM_FRAMES_LYING_30FPS = 5;  // 连续 N 帧保持仰卧角度才确认
+  private readonly CONFIRM_FRAMES_UP_30FPS = 4;     // 连续 N 帧保持坐起角度才确认
+  private readonly MIN_CYCLE_FRAMES_30FPS = 12;     // 一次完整动作最少帧数（防抖，约 0.4s@30fps）
+  private readonly MAX_CYCLE_FRAMES_30FPS = 90;     // 一次完整动作最多帧数（约 3s@30fps）
 
   // ── 臀部离垫检测 ──
   private readonly HIP_LIFT_THRESHOLD = 0.03; // 臀部 Y 上升超过此比例判定离垫
@@ -83,10 +83,22 @@ export class SitUpCounter extends ExerciseCounter {
 
   // ── 速度追踪（自适应阈值）──
   private recentCycles: number[] = [];       // 最近的周期帧数
-  private avgCycleFrames = 30;               // 平均周期帧数
+  private avgCycleFrames = this.framesAt30Fps(30);               // 平均周期帧数
+
+  protected onFrameIntervalChanged(): void {
+    this.resizeTimingWindows();
+    this.avgCycleFrames = this.framesAt30Fps(30);
+  }
+
+  private resizeTimingWindows(): void {
+    this.angleHistory.resize(this.framesAt30Fps(20));
+    this.hipYHistory.resize(this.framesAt30Fps(20));
+    this.shoulderYHistory.resize(this.framesAt30Fps(20));
+  }
 
   reset(): void {
     super.reset();
+    this.resizeTimingWindows();
     this.phase = 'idle';
     this.phaseFrameCount = 0;
     this.lastPhase = 'idle';
@@ -99,7 +111,7 @@ export class SitUpCounter extends ExerciseCounter {
     this.prevAngle = 180;
     this.angleDirection = 'stable';
     this.recentCycles = [];
-    this.avgCycleFrames = 30;
+    this.avgCycleFrames = this.framesAt30Fps(30);
     this.baselineHipY = 0;
     this.baselineAnkleY = 0;
     this.trunkAngleFilter.reset(180);
@@ -223,7 +235,7 @@ export class SitUpCounter extends ExerciseCounter {
     }
 
     // 更新基线（如果还在稳定仰卧）
-    if (angle >= this.LYING_ANGLE_MIN && this.hipYHistory.size >= 5) {
+    if (angle >= this.LYING_ANGLE_MIN && this.hipYHistory.size >= this.framesAt30Fps(5)) {
       this.baselineHipY = this.hipYHistory.mean();
     }
   }
@@ -233,13 +245,13 @@ export class SitUpCounter extends ExerciseCounter {
     // 检查是否到达坐起位置
     if (angle <= this.UP_ANGLE_MAX) {
       // 需要保持几帧确认（防止晃动误判）
-      if (this.phaseFrameCount >= this.CONFIRM_FRAMES_UP) {
+      if (this.phaseFrameCount >= this.framesAt30Fps(this.CONFIRM_FRAMES_UP_30FPS)) {
         this.transitionTo('up');
       }
     }
 
     // 如果角度反而增大（没坐起来就回去了）→ 退回 lying
-    if (this.angleDirection === 'rising' && this.phaseFrameCount > 3) {
+    if (this.angleDirection === 'rising' && this.phaseFrameCount > this.framesAt30Fps(3)) {
       if (angle > this.prevAngle + 15) {
         // 未完成坐起就倒回 → 不计数
         this.transitionTo('lying');
@@ -264,7 +276,7 @@ export class SitUpCounter extends ExerciseCounter {
     // 正在返回仰卧，角度持续增大
     if (angle >= this.LYING_ANGLE_MIN) {
       // 需要保持几帧确认回到仰卧
-      if (this.phaseFrameCount >= this.CONFIRM_FRAMES_LYING) {
+      if (this.phaseFrameCount >= this.framesAt30Fps(this.CONFIRM_FRAMES_LYING_30FPS)) {
         // ✅ 完成一次有效仰卧起坐！
         this.recordValidSitUp();
         this.transitionTo('done');
@@ -282,7 +294,7 @@ export class SitUpCounter extends ExerciseCounter {
     }
 
     // 如果角度又减小（没躺下又坐起来）→ 回到 up
-    if (angle < this.UP_ANGLE_MAX && this.phaseFrameCount > 5) {
+    if (angle < this.UP_ANGLE_MAX && this.phaseFrameCount > this.framesAt30Fps(5)) {
       this.transitionTo('up');
     }
 
@@ -302,14 +314,14 @@ export class SitUpCounter extends ExerciseCounter {
     // 检查周期是否合理
     const cycleFrames = this.totalFrames - this.cycleStartFrame;
 
-    if (cycleFrames < this.MIN_CYCLE_FRAMES) {
+    if (cycleFrames < this.framesAt30Fps(this.MIN_CYCLE_FRAMES_30FPS)) {
       // 太快了，可能是误判
       this.lastFoul = 'too_fast';
       this.foulCount++;
       return;
     }
 
-    if (cycleFrames > this.MAX_CYCLE_FRAMES) {
+    if (cycleFrames > this.framesAt30Fps(this.MAX_CYCLE_FRAMES_30FPS)) {
       // 太慢了，可能是中间停顿
       this.lastFoul = 'incomplete_up';
       this.foulCount++;
@@ -346,10 +358,11 @@ export class SitUpCounter extends ExerciseCounter {
 
   // ── 方向检测 ──
   private detectDirection(angle: number): void {
-    if (this.angleHistory.size < 3) return;
+    const directionLookback = Math.max(2, this.framesAt30Fps(3));
+    if (this.angleHistory.size < directionLookback) return;
 
     const recent = this.angleHistory.data;
-    const diff = angle - recent[recent.length - 3];
+    const diff = angle - recent[recent.length - directionLookback];
 
     if (diff > 3) {
       this.angleDirection = 'rising';   // 角度增大 = 躺下
@@ -407,7 +420,7 @@ export class SitUpCounter extends ExerciseCounter {
         return null; // 仰卧等待中
 
       case 'rising':
-        if (this.phaseFrameCount > 20) {
+        if (this.phaseFrameCount > this.framesAt30Fps(20)) {
           // 起身时间太长
           return {
             type: 'warning',

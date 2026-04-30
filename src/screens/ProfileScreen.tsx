@@ -30,10 +30,17 @@ export default function ProfileScreen({ navigation }: ProfileScreenProps) {
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const isGuest = !!user?.isGuest;
 
   const handleSaveNickname = async () => {
     if (!nickname.trim()) {
       Alert.alert('提示', '昵称不能为空');
+      return;
+    }
+    if (isGuest && user) {
+      updateUser({ ...user, nickname: nickname.trim() });
+      setIsEditing(false);
+      Alert.alert('已更新', '本地昵称已更新');
       return;
     }
     setIsSaving(true);
@@ -83,10 +90,10 @@ export default function ProfileScreen({ navigation }: ProfileScreenProps) {
   };
 
   const handleLogout = () => {
-    Alert.alert('确认登出', '确定要退出登录吗？', [
+    Alert.alert(isGuest ? '退出本地模式' : '确认登出', isGuest ? '确定要退出本地训练模式吗？' : '确定要退出登录吗？', [
       { text: '取消', style: 'cancel' },
       {
-        text: '登出',
+        text: isGuest ? '退出' : '登出',
         style: 'destructive',
         onPress: async () => {
           await logout();
@@ -118,7 +125,7 @@ export default function ProfileScreen({ navigation }: ProfileScreenProps) {
 
           <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>邮箱</Text>
-            <Text style={styles.infoValue} numberOfLines={1}>{user?.email}</Text>
+            <Text style={styles.infoValue} numberOfLines={1}>{isGuest ? '本地模式' : user?.email}</Text>
           </View>
 
           <View style={styles.infoRow}>
@@ -159,6 +166,7 @@ export default function ProfileScreen({ navigation }: ProfileScreenProps) {
         </View>
 
         {/* 安全设置卡片 */}
+        {!isGuest && (
         <View style={styles.card}>
           <Text style={styles.cardLabel}>安全设置</Text>
 
@@ -170,10 +178,11 @@ export default function ProfileScreen({ navigation }: ProfileScreenProps) {
             <Text style={styles.menuArrow}>›</Text>
           </TouchableOpacity>
         </View>
+        )}
 
         {/* 登出按钮 */}
         <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-          <Text style={styles.logoutText}>退出登录</Text>
+          <Text style={styles.logoutText}>{isGuest ? '退出本地模式' : '退出登录'}</Text>
         </TouchableOpacity>
 
         <View style={{ height: 40 }} />

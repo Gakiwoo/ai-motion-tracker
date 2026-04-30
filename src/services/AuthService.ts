@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import {
   User,
   AuthTokens,
@@ -8,11 +9,19 @@ import {
   ChangePasswordRequest,
   UsageLog,
 } from '../types/auth';
+import { resolveApiBaseUrl } from '../utils/apiBaseUrl';
 
 // ── 常量 ──
-const BASE_URL = __DEV__
-  ? 'http://localhost:5173'       // 本地开发：Vite dev server（代理到 localhost:3000）
-  : 'https://gakiwoo.com';        // 生产环境
+const isDev = (globalThis as unknown as { __DEV__?: boolean }).__DEV__ ?? false;
+const envBaseUrl = (globalThis as unknown as {
+  process?: { env?: { EXPO_PUBLIC_API_BASE_URL?: string } };
+}).process?.env?.EXPO_PUBLIC_API_BASE_URL;
+
+const BASE_URL = resolveApiBaseUrl({
+  isDev,
+  platformOS: Platform.OS,
+  envUrl: envBaseUrl,
+});
 
 const TOKEN_KEY = '@auth_tokens';
 const USER_KEY = '@auth_user';
@@ -110,6 +119,30 @@ async function clearUser(): Promise<void> {
   await AsyncStorage.removeItem(USER_KEY);
 }
 
+async function clearSession(): Promise<void> {
+  await clearTokens();
+  await clearUser();
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new AuthError('请求超时', 408));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 // ── Refresh Token ──
 async function refreshToken(refreshTokenStr: string): Promise<boolean> {
   try {
@@ -125,8 +158,7 @@ async function refreshToken(refreshTokenStr: string): Promise<boolean> {
 
     if (!res.ok) {
       // refresh 失败，清除本地登录状态
-      await clearTokens();
-      await clearUser();
+      await clearSession();
       return false;
     }
 
@@ -312,9 +344,12 @@ const AuthService = {
 
     // 尝试用 /me 验证 token 是否仍然有效
     try {
-      const freshUser = await this.getMe();
+      const freshUser = await withTimeout(this.getMe(), 2500);
       return freshUser;
-    } catch {
+    } catch (err) {
+      if (err instanceof AuthError && (err.status === 401 || err.status === 403)) {
+        await clearSession();
+      }
       return null;
     }
   },

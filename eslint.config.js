@@ -19,7 +19,9 @@ module.exports = [
       parser: tsParser,
       globals: {
         ...globals.node,
+        ...globals.browser,
         ...globals.jest,
+        __DEV__: 'readonly',
       },
     },
     plugins: {
@@ -37,6 +39,7 @@ module.exports = [
 
       // 通用规则
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+      'no-undef': 'off',
       'no-unused-vars': 'off', // 用 TS 版本代替
     },
   },

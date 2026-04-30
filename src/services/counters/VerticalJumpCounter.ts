@@ -75,12 +75,24 @@ export class VerticalJumpCounter extends ExerciseCounter {
   private readonly CROUCH_ANGLE_THRESHOLD = 100;     // 膝盖角 < 此值判定蹲下
   private readonly TAKEOFF_ANGLE_THRESHOLD = 145;    // 膝盖角 > 此值判定起跳
   private readonly AIRBORNE_Y_THRESHOLD = 12;       // 脚踝Y上升超过此像素判定腾空
-  private readonly LANDING_STABLE_FRAMES = 12;      // 落地后需要稳定帧数
+  private readonly LANDING_STABLE_FRAMES_30FPS = 12;      // 落地后需要稳定帧数
+  private readonly CALIBRATION_READY_FRAMES_30FPS = 25;   // 稳定校准确认帧数
+  private readonly CROUCH_TO_TAKEOFF_FRAMES_30FPS = 4;    // 下蹲后起跳确认帧数
+  private readonly TAKEOFF_TIMEOUT_FRAMES_30FPS = 12;     // 起跳阶段超时帧数
+  private readonly LANDING_FEEDBACK_FRAMES_30FPS = 4;     // 落地反馈等待帧数
   private readonly MIN_JUMP_HEIGHT_PX = 8;          // 最小有效腾空高度像素
   private readonly STABLE_VARIANCE_THRESHOLD = 5;   // 方差阈值（判定稳定站立）
 
   // ── 用户身高 ──
   private _userHeightCm = 170;
+
+  protected onFrameIntervalChanged(): void {
+    this.resizeTimingWindows();
+  }
+
+  private resizeTimingWindows(): void {
+    this.stabilityWindow.resize(this.framesAt30Fps(30));
+  }
 
   setUserHeight(heightCm: number): void {
     this._userHeightCm = Math.max(100, Math.min(220, heightCm));
@@ -120,6 +132,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
 
   reset(): void {
     super.reset();
+    this.resizeTimingWindows();
     this.phase = 'idle';
     this.phaseFrameCount = 0;
     this.lastPhase = 'idle';
@@ -184,7 +197,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
     if (this.calibrationRequired) {
       this.stabilityWindow.push(torsoLength);
 
-      if (this.stabilityWindow.size >= 25) {
+      if (this.stabilityWindow.size >= this.framesAt30Fps(this.CALIBRATION_READY_FRAMES_30FPS)) {
         const variance = this.stabilityWindow.variance();
         if (variance < this.STABLE_VARIANCE_THRESHOLD && torsoLength > 30) {
           this.calibration.torsoLengthPx = this.stabilityWindow.mean();
@@ -249,7 +262,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
     }
 
     // 检测起身起跳：膝盖角从深蹲恢复到接近伸直
-    if (kneeAngle > this.TAKEOFF_ANGLE_THRESHOLD && this.phaseFrameCount > 4) {
+    if (kneeAngle > this.TAKEOFF_ANGLE_THRESHOLD && this.phaseFrameCount > this.framesAt30Fps(this.CROUCH_TO_TAKEOFF_FRAMES_30FPS)) {
       this.takeoffAnkleY = ankleY;
       this.takeoffHipY = hipY;
       this.airborneMinAnkleY = Infinity;
@@ -266,7 +279,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
       this.transitionTo('airborne');
     }
     // 超时未进入腾空 → 退回 crouch
-    if (this.phaseFrameCount > 12) {
+    if (this.phaseFrameCount > this.framesAt30Fps(this.TAKEOFF_TIMEOUT_FRAMES_30FPS)) {
       this.transitionTo('crouch');
     }
   }
@@ -292,7 +305,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
     this.landingAnkleY = ankleY;
 
     // 稳定后记录结果
-    if (this.phaseFrameCount >= this.LANDING_STABLE_FRAMES) {
+    if (this.phaseFrameCount >= this.framesAt30Fps(this.LANDING_STABLE_FRAMES_30FPS)) {
       this.recordJump();
       this.transitionTo('stable');
     }
@@ -385,7 +398,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
         return { type: 'success', message: '腾空中...' };
 
       case 'landing': {
-        if (this.phaseFrameCount < 4) return null;
+        if (this.phaseFrameCount < this.framesAt30Fps(this.LANDING_FEEDBACK_FRAMES_30FPS)) return null;
         const h = Math.round(this.currentJumpHeightCm);
         if (h > 0 && h < 25) {
           return { type: 'warning', message: '蹬地力量不足，注意摆臂配合' };
@@ -400,7 +413,7 @@ export class VerticalJumpCounter extends ExerciseCounter {
         const h = Math.round(this.currentJumpHeightCm);
         if (h <= 0) return null;
         const best = Math.round(this.maxJumpHeightCm);
-        let msg = '';
+        let msg: string;
         if (h >= 55) msg = '出色的弹跳！';
         else if (h >= 40) msg = '不错的成绩！';
         else if (h >= 25) msg = '继续加油！';

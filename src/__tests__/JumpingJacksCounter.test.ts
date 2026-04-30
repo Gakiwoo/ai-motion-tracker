@@ -47,6 +47,15 @@ describe('JumpingJacksCounter', () => {
       expect(counter.isCalibrated()).toBe(true);
       expect(counter.getPhase()).toBe('closed');
     });
+
+    it('降频到 120ms 后应按约 1 秒完成标定，而不是固定等待 30 帧', () => {
+      counter.setFrameInterval(120);
+      for (let i = 0; i < 9; i++) {
+        counter.processFrame(standingPose());
+      }
+      expect(counter.isCalibrated()).toBe(true);
+      expect(counter.getPhase()).toBe('closed');
+    });
   });
 
   describe('开合跳计数', () => {

@@ -20,7 +20,18 @@ export abstract class ExerciseCounter {
 
   /** 设置实际帧间隔，用于 getRate 的速率计算 */
   setFrameInterval(ms: number): void {
-    this.frameIntervalMs = ms;
+    this.frameIntervalMs = Math.max(16, ms);
+    this.onFrameIntervalChanged();
+  }
+
+  protected onFrameIntervalChanged(): void {}
+
+  protected framesForMs(ms: number): number {
+    return Math.max(1, Math.ceil(ms / this.frameIntervalMs));
+  }
+
+  protected framesAt30Fps(frames: number): number {
+    return this.framesForMs((frames * 1000) / 30);
   }
 
   getCount(): number {

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, TextInput, Modal, StatusBar, Platform, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ExerciseType, Pose, WorkoutMode } from '../types';
@@ -8,6 +8,8 @@ import { useWorkout } from '../hooks/useWorkout';
 import { useExerciseFeedback, FormFeedback } from '../hooks/useExerciseFeedback';
 import { useSound } from '../hooks/useSound';
 import { EXERCISE_NAMES, DEFAULT_TARGETS, DEFAULT_DURATIONS } from '../constants/exerciseConfig';
+import { getExerciseRuntimeProfile } from '../utils/exerciseRuntime';
+import { analyzePoseQuality, PoseQualityResult } from '../utils/poseQuality';
 
 function formatCountdown(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -37,18 +39,25 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
     start,
     stop,
     switchMode,
+    setFrameInterval,
   } = useWorkout(exerciseType);
 
   const [showTargetModal, setShowTargetModal] = useState(false);
   const [targetInput, setTargetInput] = useState(DEFAULT_TARGETS[exerciseType].toString());
   const [durationInput, setDurationInput] = useState(DEFAULT_DURATIONS[exerciseType].toString());
   const [currentFeedback, setCurrentFeedback] = useState<FormFeedback | null>(null);
+  const [poseQuality, setPoseQuality] = useState<PoseQualityResult | null>(null);
+  const [startCountdown, setStartCountdown] = useState<number | null>(null);
   const hasShownCompletionRef = useRef(false);
   const startTimeRef = useRef<number | null>(null);
   const prevFeedbackMsgRef = useRef<string | null>(null);
+  const prevQualityMsgRef = useRef<string | null>(null);
   const handleStopRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const countdownAnim = useRef(new Animated.Value(1)).current;
   const [elapsed, setElapsed] = useState(0);
+  const runtimeProfile = useMemo(() => getExerciseRuntimeProfile(exerciseType), [exerciseType]);
 
   const { getFeedback } = useExerciseFeedback();
   const { playSuccess } = useSound();
@@ -75,19 +84,45 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
     return () => clearInterval(timer);
   }, [isActive]);
 
+  useEffect(() => {
+    return () => {
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+      if (countdownLoopRef.current) {
+        countdownLoopRef.current.stop();
+        countdownLoopRef.current = null;
+      }
+    };
+  }, []);
+
   // Countdown pulse animation when time is up
   useEffect(() => {
+    if (countdownLoopRef.current) {
+      countdownLoopRef.current.stop();
+      countdownLoopRef.current = null;
+    }
+
     if (timeUp) {
-      Animated.loop(
+      const loop = Animated.loop(
         Animated.sequence([
           Animated.timing(countdownAnim, { toValue: 0.6, duration: 500, useNativeDriver: true }),
           Animated.timing(countdownAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
         ])
-      ).start();
+      );
+      countdownLoopRef.current = loop;
+      loop.start();
+      return () => {
+        loop.stop();
+        if (countdownLoopRef.current === loop) {
+          countdownLoopRef.current = null;
+        }
+      };
     } else {
       countdownAnim.setValue(1);
     }
-  }, [timeUp]);
+  }, [timeUp, countdownAnim]);
 
   // Check for target completion (count mode only)
   useEffect(() => {
@@ -110,7 +145,15 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
   }, [timeUp, isActive]);
 
   const handlePoseDetected = useCallback((pose: Pose) => {
+    const quality = analyzePoseQuality(pose);
+    if (quality.message !== prevQualityMsgRef.current) {
+      prevQualityMsgRef.current = quality.message;
+      setPoseQuality(quality);
+    }
+
     processFrame(pose);
+    if (!isActive) return;
+
     const feedback = getFeedback(pose, exerciseType);
     // 反馈去重：只在消息内容变化时更新 state，避免每帧无效重渲染
     if (feedback) {
@@ -122,11 +165,34 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
       prevFeedbackMsgRef.current = null;
       setCurrentFeedback(null);
     }
-  }, [processFrame, getFeedback, exerciseType]);
+  }, [processFrame, getFeedback, exerciseType, isActive]);
 
   const handleStart = () => {
-    start();
+    if (startCountdown !== null) return;
+
+    if (!poseQuality?.canStart) {
+      Alert.alert('先调整站位', poseQuality?.message || '请站到镜头前，保持全身可见');
+      return;
+    }
+
     setCurrentFeedback(null);
+    prevFeedbackMsgRef.current = null;
+    setStartCountdown(3);
+
+    let next = 3;
+    countdownTimerRef.current = setInterval(() => {
+      next -= 1;
+      if (next <= 0) {
+        if (countdownTimerRef.current) {
+          clearInterval(countdownTimerRef.current);
+          countdownTimerRef.current = null;
+        }
+        setStartCountdown(null);
+        start();
+      } else {
+        setStartCountdown(next);
+      }
+    }, 1000);
   };
 
   const handleStop = async () => {
@@ -192,7 +258,16 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
-      <CameraView onPoseDetected={handlePoseDetected} isActive={isActive} />
+      <CameraView
+        onPoseDetected={handlePoseDetected}
+        isActive={isActive}
+        throttleMs={runtimeProfile.activePoseIntervalMs}
+        previewThrottleMs={runtimeProfile.previewPoseIntervalMs}
+        maxAdaptiveIntervalMs={runtimeProfile.maxAdaptiveIntervalMs}
+        modelComplexity={runtimeProfile.modelComplexity}
+        onActivePoseIntervalChange={setFrameInterval}
+        enablePreviewPose={!isActive}
+      />
       <View style={[styles.overlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">
         {/* ── 顶部栏 ── */}
         <View style={styles.topRow}>
@@ -244,12 +319,27 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
             </Animated.View>
           )}
 
-          <Text style={[
-            styles.counter,
-            isActive && isTimed && styles.counterTimed,
-          ]}>
-            {count}
-          </Text>
+          {startCountdown !== null ? (
+            <Text style={styles.startCountdown}>{startCountdown}</Text>
+          ) : (
+            <Text style={[
+              styles.counter,
+              isActive && isTimed && styles.counterTimed,
+            ]}>
+              {count}
+            </Text>
+          )}
+
+          {!isActive && startCountdown === null && (
+            <View style={[
+              styles.setupGuide,
+              poseQuality?.canStart ? styles.setupGuideReady : styles.setupGuideWarning,
+            ]}>
+              <Text style={styles.setupGuideText}>
+                {poseQuality?.message || '正在识别站位，请保持全身入镜'}
+              </Text>
+            </View>
+          )}
 
           {isActive && (
             <View style={styles.targetHint}>
@@ -272,8 +362,12 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
         {/* ── 底部控制按钮 ── */}
         <View style={styles.controls}>
           {!isActive ? (
-            <TouchableOpacity style={styles.startButton} onPress={handleStart}>
-              <Text style={styles.buttonText}>开始</Text>
+            <TouchableOpacity
+              style={[styles.startButton, startCountdown !== null && styles.disabledButton]}
+              onPress={handleStart}
+              disabled={startCountdown !== null}
+            >
+              <Text style={styles.buttonText}>{startCountdown !== null ? '准备中...' : '开始'}</Text>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
@@ -498,6 +592,38 @@ const styles = StyleSheet.create({
   },
   counterTimed: {
     fontSize: 80,
+  },
+  startCountdown: {
+    fontSize: 112,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    textShadowColor: 'rgba(0,0,0,0.7)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 18,
+    fontFamily: Platform.OS === 'ios' ? 'SF Pro Display' : 'sans-serif-condensed',
+  },
+  setupGuide: {
+    marginTop: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    maxWidth: 320,
+  },
+  setupGuideReady: {
+    backgroundColor: 'rgba(52,199,89,0.24)',
+    borderColor: 'rgba(52,199,89,0.52)',
+  },
+  setupGuideWarning: {
+    backgroundColor: 'rgba(0,0,0,0.58)',
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  setupGuideText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   targetHint: {
     marginTop: 8,

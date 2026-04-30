@@ -70,12 +70,24 @@ export class StandingLongJumpCounter extends ExerciseCounter {
   private readonly CROUCH_ANGLE_THRESHOLD = 100;   // 膝盖角 < 此值判定蹲下
   private readonly TAKEOFF_ANGLE_THRESHOLD = 140;  // 膝盖角 > 此值判定起跳
   private readonly AIRBORNE_Y_THRESHOLD = 15;      // 脚踝Y上升超过此像素判定腾空
-  private readonly LANDING_STABLE_FRAMES = 15;     // 落地后需要稳定帧数
+  private readonly LANDING_STABLE_FRAMES_30FPS = 15;     // 落地后需要稳定帧数
+  private readonly CALIBRATION_READY_FRAMES_30FPS = 25;  // 稳定校准确认帧数
+  private readonly CROUCH_TO_TAKEOFF_FRAMES_30FPS = 5;   // 下蹲后起跳确认帧数
+  private readonly TAKEOFF_TIMEOUT_FRAMES_30FPS = 15;    // 起跳阶段超时帧数
+  private readonly LANDING_FEEDBACK_FRAMES_30FPS = 5;    // 落地反馈等待帧数
   private readonly MIN_DISTANCE_PX = 20;           // 最小有效位移像素
   private readonly STABLE_VARIANCE_THRESHOLD = 5;  // 方差阈值（判定稳定站立）
 
   // ── 用户身高（可通过 setter 设置）──
   private _userHeightCm = 170;
+
+  protected onFrameIntervalChanged(): void {
+    this.resizeTimingWindows();
+  }
+
+  private resizeTimingWindows(): void {
+    this.stabilityWindow.resize(this.framesAt30Fps(30));
+  }
 
   setUserHeight(heightCm: number): void {
     this._userHeightCm = Math.max(100, Math.min(220, heightCm));
@@ -107,6 +119,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
 
   reset(): void {
     super.reset();
+    this.resizeTimingWindows();
     this.phase = 'idle';
     this.phaseFrameCount = 0;
     this.lastPhase = 'idle';
@@ -171,7 +184,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
     if (this.calibrationRequired) {
       this.stabilityWindow.push(torsoLength);
 
-      if (this.stabilityWindow.size >= 25) {
+      if (this.stabilityWindow.size >= this.framesAt30Fps(this.CALIBRATION_READY_FRAMES_30FPS)) {
         const variance = this.stabilityWindow.variance();
         if (variance < this.STABLE_VARIANCE_THRESHOLD && torsoLength > 30) {
           // 用户稳定站立，执行标定
@@ -238,7 +251,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
     }
 
     // 检测起身 → 起跳
-    if (kneeAngle > this.TAKEOFF_ANGLE_THRESHOLD && this.phaseFrameCount > 5) {
+    if (kneeAngle > this.TAKEOFF_ANGLE_THRESHOLD && this.phaseFrameCount > this.framesAt30Fps(this.CROUCH_TO_TAKEOFF_FRAMES_30FPS)) {
       this.transitionTo('takeoff');
       this.takeoffAnkleX = ankleX;
       this.takeoffAnkleY = _ankleY;
@@ -252,7 +265,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
       this.transitionTo('airborne');
     }
     // 超时未进入腾空，退回 crouch
-    if (this.phaseFrameCount > 15) {
+    if (this.phaseFrameCount > this.framesAt30Fps(this.TAKEOFF_TIMEOUT_FRAMES_30FPS)) {
       this.transitionTo('crouch');
     }
   }
@@ -276,7 +289,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
     this.landingAnkleY = ankleY;
 
     // 稳定后记录结果
-    if (this.phaseFrameCount >= this.LANDING_STABLE_FRAMES) {
+    if (this.phaseFrameCount >= this.framesAt30Fps(this.LANDING_STABLE_FRAMES_30FPS)) {
       this.recordJump();
       this.transitionTo('stable');
 
@@ -368,7 +381,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
       case 'stable': {
         if (this.jumpDistanceCm > 0) {
           const dist = Math.round(this.jumpDistanceCm);
-          let qualityMsg = '';
+          let qualityMsg: string;
           if (dist >= 200) qualityMsg = '非常出色！';
           else if (dist >= 150) qualityMsg = '不错的成绩！';
           else qualityMsg = '继续加油！';
@@ -393,7 +406,7 @@ export class StandingLongJumpCounter extends ExerciseCounter {
 
   private assessLanding(): FormFeedback | null {
     // 检查是否双脚落地（用起跳和落地的水平距离差异判断）
-    if (this.phaseFrameCount < 5) {
+    if (this.phaseFrameCount < this.framesAt30Fps(this.LANDING_FEEDBACK_FRAMES_30FPS)) {
       return null; // 还在落地过程中
     }
 

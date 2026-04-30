@@ -43,6 +43,14 @@ describe('SquatsCounter', () => {
       expect(counter.getPhase()).toBe('standing');
     });
 
+    it('降频到 120ms 后应按约 1 秒完成站立标定', () => {
+      counter.setFrameInterval(120);
+      for (let i = 0; i < 9; i++) {
+        counter.processFrame(standingPose());
+      }
+      expect(counter.getPhase()).toBe('standing');
+    });
+
     it('完成一次深蹲应计数', () => {
       // 标定阶段：站立 35 帧
       for (let i = 0; i < 35; i++) {

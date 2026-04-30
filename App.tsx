@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -14,24 +14,27 @@ import AnalyticsScreen from './src/screens/AnalyticsScreen';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import { RootStackParamList } from './src/types/navigation';
 import { mediaPipeAssetService } from './src/services/MediaPipeAssetService';
+import { shouldPreloadMediaPipeAssets } from './src/utils/mediaPipeCdnPolicy';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
 // ── 认证守卫：根据登录状态决定显示哪些页面 ──
 function AuthGate() {
   const { user, isLoading } = useAuth();
+  const mediaPipePreloadStartedRef = useRef(false);
 
-  // 用户登录后后台预热 MediaPipe 缓存检查
-  // 缓存已存在时仅做轻量版本校验（~0.1s），不影响 UI
-  // 缓存未下载时静默开始，用户到达 WorkoutScreen 前通常已就绪
+  // 登录/游客入口渲染后后台预热模型，不阻塞首屏。
   useEffect(() => {
-    if (user) {
-      mediaPipeAssetService.ensureCached().catch((err) => {
-        // 预热失败不影响 App 启动，WorkoutScreen 会重试
-        console.log('[App] MediaPipe prefetch skipped:', err?.message ?? err);
+    if (shouldPreloadMediaPipeAssets({
+      authLoading: isLoading,
+      alreadyStarted: mediaPipePreloadStartedRef.current,
+    })) {
+      mediaPipePreloadStartedRef.current = true;
+      mediaPipeAssetService.preload().catch((err) => {
+        console.log('[App] MediaPipe preload skipped:', err?.message ?? err);
       });
     }
-  }, [user]);
+  }, [isLoading, user]);
 
   if (isLoading) {
     return (

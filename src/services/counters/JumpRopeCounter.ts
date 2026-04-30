@@ -59,7 +59,7 @@ export class JumpRopeCounter extends ExerciseCounter {
   private lastWristPeak = false;         // 上次手腕距离是否在峰值
   private wristPeakCount = 0;            // 手腕峰值计数（用于节奏检测）
   private wristCycleFrames = 0;          // 上一次完整周期帧数
-  private expectedCycleFrames = 20;      // 期望周期帧数（自适应，初始 ~0.67s@30fps）
+  private expectedCycleFrames = this.framesAt30Fps(20);      // 期望周期帧数（自适应，初始 ~0.67s@30fps）
   private framesSinceLastPeak = 0;       // 距上一个峰的帧数（防止高频噪声）
   private framesSinceLastCycleStart = 0; // 距上一个周期开始的帧数（自适应用）
 
@@ -70,7 +70,7 @@ export class JumpRopeCounter extends ExerciseCounter {
 
   // ── 双信号融合 ──
   private recentJumpIntervals: number[] = [];  // 最近几次跳跃的帧间隔
-  private avgJumpInterval = 20;                // 平均帧间隔（自适应）
+  private avgJumpInterval = this.framesAt30Fps(20);                // 平均帧间隔（自适应）
   private confirmWindow = new SlidingWindow(6); // 确认窗口（防抖）
   private bounceWindow = new SlidingWindow(60); // 弹跳信号回溯窗口（交叉验证用）
 
@@ -81,18 +81,33 @@ export class JumpRopeCounter extends ExerciseCounter {
   // ── 阈值配置 ──
   private readonly WRIST_DIST_CHANGE_THRESHOLD = 0.008;  // 手腕距离变化阈值（归一化）
   private readonly HIP_JUMP_THRESHOLD = 0.015;           // 髋部弹跳阈值
-  private readonly MIN_CYCLE_FRAMES = 8;                  // 最小周期帧数（约 0.27s@30fps）
-  private readonly MAX_CYCLE_FRAMES = 60;                 // 最大周期帧数（约 2s@30fps）
-  private readonly CONFIRM_FRAMES_START = 5;              // 开始跳绳确认帧数
-  private readonly REST_TIMEOUT_FRAMES = 45;              // 休息超时帧数（约 1.5s）
+  private readonly MIN_CYCLE_FRAMES_30FPS = 8;            // 最小周期帧数（约 0.27s@30fps）
+  private readonly MAX_CYCLE_FRAMES_30FPS = 60;           // 最大周期帧数（约 2s@30fps）
+  private readonly REST_TIMEOUT_FRAMES_30FPS = 45;        // 休息超时帧数（约 1.5s）
 
   // ── 自适应标定 ──
   private shoulderWidth = 0;             // 肩宽（归一化，用于手腕距离归一化）
   private hipWidth = 0;                  // 髋宽
   private calibrated = false;
 
+  protected onFrameIntervalChanged(): void {
+    this.resizeTimingWindows();
+    this.expectedCycleFrames = this.framesAt30Fps(20);
+    this.avgJumpInterval = this.framesAt30Fps(20);
+  }
+
+  private resizeTimingWindows(): void {
+    this.wristDistHistory.resize(this.framesAt30Fps(40));
+    this.hipYHistory.resize(this.framesAt30Fps(40));
+    this.wristAngleHistory.resize(this.framesAt30Fps(40));
+    this.baselineWindow.resize(this.framesAt30Fps(30));
+    this.confirmWindow.resize(this.framesAt30Fps(6));
+    this.bounceWindow.resize(this.framesAt30Fps(60));
+  }
+
   reset(): void {
     super.reset();
+    this.resizeTimingWindows();
     this.phase = 'idle';
     this.phaseFrameCount = 0;
     this.lastPhase = 'idle';
@@ -100,7 +115,7 @@ export class JumpRopeCounter extends ExerciseCounter {
     this.lastWristPeak = false;
     this.wristPeakCount = 0;
     this.wristCycleFrames = 0;
-    this.expectedCycleFrames = 20;
+    this.expectedCycleFrames = this.framesAt30Fps(20);
     this.framesSinceLastPeak = 0;
     this.framesSinceLastCycleStart = 0;
     this.lastHipValley = false;
@@ -108,7 +123,7 @@ export class JumpRopeCounter extends ExerciseCounter {
     this.consecutiveJumps = 0;
     this.missedSwings = 0;
     this.recentJumpIntervals = [];
-    this.avgJumpInterval = 20;
+    this.avgJumpInterval = this.framesAt30Fps(20);
     this.shoulderWidth = 0;
     this.hipWidth = 0;
     this.calibrated = false;
@@ -215,7 +230,7 @@ export class JumpRopeCounter extends ExerciseCounter {
     }
 
     // 检测手腕是否有周期性运动（甩绳意图）
-    if (this.wristDistHistory.size >= 20) {
+    if (this.wristDistHistory.size >= this.framesAt30Fps(20)) {
       const variance = this.wristDistHistory.variance();
       const normalizedVar = variance / (this.shoulderWidth * this.shoulderWidth + 0.001);
       // 手腕距离方差显著 → 可能在甩绳
@@ -243,7 +258,7 @@ export class JumpRopeCounter extends ExerciseCounter {
     }
 
     // 超时未检测到 → 退回 idle
-    if (this.phaseFrameCount > 60) {
+    if (this.phaseFrameCount > this.framesAt30Fps(60)) {
       this.transitionTo('idle');
     }
   }
@@ -276,7 +291,9 @@ export class JumpRopeCounter extends ExerciseCounter {
             this.expectedCycleFrames * 0.7 + this.wristCycleFrames * 0.3
           );
           // 限制范围
-          this.expectedCycleFrames = Math.max(this.MIN_CYCLE_FRAMES, Math.min(this.MAX_CYCLE_FRAMES, this.expectedCycleFrames));
+          const minCycleFrames = this.framesAt30Fps(this.MIN_CYCLE_FRAMES_30FPS);
+          const maxCycleFrames = this.framesAt30Fps(this.MAX_CYCLE_FRAMES_30FPS);
+          this.expectedCycleFrames = Math.max(minCycleFrames, Math.min(maxCycleFrames, this.expectedCycleFrames));
         }
       }
     }
@@ -316,7 +333,7 @@ export class JumpRopeCounter extends ExerciseCounter {
     }
 
     // 超时 → 退回 idle
-    if (this.phaseFrameCount > this.REST_TIMEOUT_FRAMES) {
+    if (this.phaseFrameCount > this.framesAt30Fps(this.REST_TIMEOUT_FRAMES_30FPS)) {
       this.transitionTo('idle');
       this.consecutiveJumps = 0;
     }
@@ -330,7 +347,7 @@ export class JumpRopeCounter extends ExerciseCounter {
    * @returns true 如果检测到一个完整周期（峰→谷→峰 或 谷→峰→谷）
    */
   private detectWristCycle(wristDist: number): boolean {
-    if (this.wristDistHistory.size < 10) return false;
+    if (this.wristDistHistory.size < this.framesAt30Fps(10)) return false;
 
     const data = this.wristDistHistory.data;
 
@@ -344,7 +361,7 @@ export class JumpRopeCounter extends ExerciseCounter {
 
     // 最小峰间隔检查：避免高频噪声导致多计
     if (currentIsPeak && !this.lastWristPeak) {
-      if (this.framesSinceLastPeak >= this.MIN_CYCLE_FRAMES) {
+      if (this.framesSinceLastPeak >= this.framesAt30Fps(this.MIN_CYCLE_FRAMES_30FPS)) {
         this.wristPeakCount++;
         this.framesSinceLastPeak = 0;
       }
@@ -427,7 +444,7 @@ export class JumpRopeCounter extends ExerciseCounter {
         return null; // 检测中，静默
 
       case 'jumping': {
-        if (this.count === 0 && this.phaseFrameCount > 30) {
+        if (this.count === 0 && this.phaseFrameCount > this.framesAt30Fps(30)) {
           return {
             type: 'warning',
             message: '保持节奏，手臂多甩一些...',

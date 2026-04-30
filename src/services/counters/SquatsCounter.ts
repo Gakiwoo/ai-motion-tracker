@@ -59,10 +59,10 @@ export class SquatsCounter extends ExerciseCounter {
   private readonly UP_ANGLE = 155;              // 膝盖角 > 此值 → 站起来
   private readonly MIN_SQUAT_ANGLE = 110;       // 有效深蹲最大角度（蹲得不够深）
   private readonly BACK_LEAN_THRESHOLD = 60;    // 背部角度 < 此值 → 过度前倾
-  private readonly CONFIRM_FRAMES_DOWN = 4;     // 蹲底确认帧数
-  private readonly CONFIRM_FRAMES_UP = 4;       // 站起确认帧数
-  private readonly MIN_CYCLE_FRAMES = 15;       // 最小周期帧数（约 0.5s@30fps）
-  private readonly MAX_CYCLE_FRAMES = 120;      // 最大周期帧数（约 4s@30fps）
+  private readonly CONFIRM_FRAMES_DOWN_30FPS = 4;
+  private readonly CONFIRM_FRAMES_UP_30FPS = 4;
+  private readonly MIN_CYCLE_FRAMES_30FPS = 15;
+  private readonly MAX_CYCLE_FRAMES_30FPS = 120;
 
   // ── 统计 ──
   private cycleStartFrame = 0;
@@ -90,9 +90,20 @@ export class SquatsCounter extends ExerciseCounter {
     this.kneeAngleFilter.reset(175);
     this.backAngleFilter.reset(90);
     this.hipYFilter.reset(0.5);
+    this.resizeTimingWindows();
     this.kneeAngleHistory.clear();
     this.backAngleHistory.clear();
     this.baselineWindow.clear();
+  }
+
+  protected onFrameIntervalChanged(): void {
+    this.resizeTimingWindows();
+  }
+
+  private resizeTimingWindows(): void {
+    this.kneeAngleHistory.resize(this.framesAt30Fps(20));
+    this.backAngleHistory.resize(this.framesAt30Fps(20));
+    this.baselineWindow.resize(this.framesAt30Fps(30));
   }
 
   processFrame(pose: Pose): void {
@@ -217,13 +228,13 @@ export class SquatsCounter extends ExerciseCounter {
 
     // 检测到达底部
     if (kneeAngle < this.DOWN_ANGLE) {
-      if (this.phaseFrameCount >= this.CONFIRM_FRAMES_DOWN) {
+      if (this.phaseFrameCount >= this.framesAt30Fps(this.CONFIRM_FRAMES_DOWN_30FPS)) {
         this.transitionTo('bottom');
       }
     }
 
     // 如果角度又增大（没蹲下去就站起来了）→ 回到 standing
-    if (this.phaseFrameCount > 5 && kneeAngle > this.standingKneeAngle - 10) {
+    if (this.phaseFrameCount > this.framesAt30Fps(5) && kneeAngle > this.standingKneeAngle - 10) {
       this.transitionTo('standing');
     }
   }
@@ -249,14 +260,14 @@ export class SquatsCounter extends ExerciseCounter {
   private handleAscending(kneeAngle: number, _backAngle: number): void {
     // 追踪是否站直
     if (kneeAngle > this.UP_ANGLE) {
-      if (this.phaseFrameCount >= this.CONFIRM_FRAMES_UP) {
+      if (this.phaseFrameCount >= this.framesAt30Fps(this.CONFIRM_FRAMES_UP_30FPS)) {
         this.recordSquat();
         this.transitionTo('standing');
       }
     }
 
     // 如果角度又减小（没站直又蹲下去了）→ 回到 descending
-    if (this.phaseFrameCount > 5 && kneeAngle < this.DOWN_ANGLE) {
+    if (this.phaseFrameCount > this.framesAt30Fps(5) && kneeAngle < this.DOWN_ANGLE) {
       this.transitionTo('descending');
     }
   }
@@ -273,13 +284,13 @@ export class SquatsCounter extends ExerciseCounter {
   private recordSquat(): void {
     const cycleFrames = this.totalFrames - this.cycleStartFrame;
 
-    if (cycleFrames < this.MIN_CYCLE_FRAMES) {
+    if (cycleFrames < this.framesAt30Fps(this.MIN_CYCLE_FRAMES_30FPS)) {
       this.lastFoul = 'too_fast';
       this.foulCount++;
       return;
     }
 
-    if (cycleFrames > this.MAX_CYCLE_FRAMES) {
+    if (cycleFrames > this.framesAt30Fps(this.MAX_CYCLE_FRAMES_30FPS)) {
       // 超时可能中间停顿了
       return;
     }
@@ -364,7 +375,7 @@ export class SquatsCounter extends ExerciseCounter {
       }
 
       case 'ascending': {
-        if (this.phaseFrameCount > 20) {
+        if (this.phaseFrameCount > this.framesAt30Fps(20)) {
           return {
             type: 'warning',
             message: '起身太慢，注意发力',

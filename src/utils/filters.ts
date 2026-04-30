@@ -48,7 +48,7 @@ export class KalmanFilter1D {
 
 export class SlidingWindow {
   private readonly buffer: number[] = [];
-  constructor(private readonly maxSize: number = 30) {}
+  constructor(private maxSize: number = 30) {}
 
   push(value: number): void {
     this.buffer.push(value);
@@ -89,4 +89,11 @@ export class SlidingWindow {
   clear(): void { this.buffer.length = 0; }
 
   get isFull(): boolean { return this.buffer.length >= this.maxSize; }
+
+  resize(maxSize: number): void {
+    this.maxSize = Math.max(1, Math.floor(maxSize));
+    while (this.buffer.length > this.maxSize) {
+      this.buffer.shift();
+    }
+  }
 }

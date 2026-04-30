@@ -4,12 +4,25 @@ import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { Camera } from 'expo-camera';
 import { Pose } from '../types';
 import { mediaPipeAssetService } from '../services/MediaPipeAssetService';
+import {
+  buildBlobAppendScript,
+  buildBlobBeginScript,
+  buildBlobCommitScript,
+  splitBase64IntoChunks,
+} from '../utils/webViewAssetInjection';
+import { createAdaptivePoseRuntime } from '../utils/adaptivePoseRuntime';
 
 interface CameraViewProps {
   onPoseDetected: (pose: Pose) => void;
   isActive: boolean;
   /** 发送帧率间隔（ms），默认 100。跳绳建议 80，深蹲/仰卧起坐建议 120 */
   throttleMs?: number;
+  /** 非训练状态下的低频姿态预览，用于站位/光线提示 */
+  previewThrottleMs?: number;
+  enablePreviewPose?: boolean;
+  maxAdaptiveIntervalMs?: number;
+  modelComplexity?: 0 | 1;
+  onActivePoseIntervalChange?: (intervalMs: number) => void;
 }
 
 // ── WebView 内嵌 HTML：MediaPipe Pose + Camera ──
@@ -63,12 +76,21 @@ const MEDIAPIPE_HTML = `
 
     var poseInstance = null;
     var lastPoseData = null;
+    var activeSendInterval = 100;
+    var previewSendInterval = 250;
     var sendInterval = 100;
+    var inferenceInterval = 100;
+    var modelComplexity = 1;
+    var lastInferenceTime = 0;
     var lastSendTime = 0;
+    var perfSamples = 0;
+    var perfTotalMs = 0;
     var isReady = false;
     var animFrameId = null;
     var shouldProcessPose = false;
     var shouldSendPose = false;
+    var isWorkoutActive = false;
+    var isPreviewEnabled = true;
 
     // blob: URL 注册表（由 RN 注入的本地文件数据创建）
     var blobRegistry = {};
@@ -79,22 +101,69 @@ const MEDIAPIPE_HTML = `
       } catch(e) {}
     }
 
-    // ── 由 RN 调用：注册一个 blob URL ──
-    // RN 侧通过 injectJavaScript 调用此函数，传入 base64 编码的文件数据
+    var pendingBlobChunks = {};
+
+    function registerBlobFromBase64(filename, base64Data, mimeType) {
+      var binary = atob(base64Data);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      if (blobRegistry[filename]) {
+        URL.revokeObjectURL(blobRegistry[filename]);
+      }
+      var blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+      var url = URL.createObjectURL(blob);
+      blobRegistry[filename] = url;
+      post('log', 'Registered blob: ' + filename + ' (' + bytes.length + ' bytes)');
+    }
+
+    // ── 由 RN 调用：分块注册 blob URL ──
+    window.__beginBlob = function(filename, mimeType) {
+      pendingBlobChunks[filename] = {
+        mimeType: mimeType || 'application/octet-stream',
+        chunks: []
+      };
+      return true;
+    };
+
+    window.__appendBlobChunk = function(filename, chunk) {
+      var pending = pendingBlobChunks[filename];
+      if (!pending) {
+        throw new Error('Blob transfer was not started: ' + filename);
+      }
+      pending.chunks.push(chunk);
+      return true;
+    };
+
+    window.__commitBlob = function(filename) {
+      try {
+        var pending = pendingBlobChunks[filename];
+        if (!pending) {
+          throw new Error('Blob transfer was not started: ' + filename);
+        }
+        var base64Data = pending.chunks.join('');
+        pending.chunks = [];
+        delete pendingBlobChunks[filename];
+        registerBlobFromBase64(filename, base64Data, pending.mimeType);
+        post('blobAck', { filename: filename, ok: true });
+      } catch(e) {
+        delete pendingBlobChunks[filename];
+        post('blobAck', { filename: filename, ok: false, error: e.message });
+        throw e;
+      }
+      return true;
+    };
+
     window.__registerBlob = function(filename, base64Data, mimeType) {
       try {
-        var binary = atob(base64Data);
-        var bytes = new Uint8Array(binary.length);
-        for (var i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        var blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
-        var url = URL.createObjectURL(blob);
-        blobRegistry[filename] = url;
-        post('log', 'Registered blob: ' + filename + ' (' + bytes.length + ' bytes)');
+        registerBlobFromBase64(filename, base64Data, mimeType);
+        post('blobAck', { filename: filename, ok: true });
       } catch(e) {
-        post('log', 'Failed to register blob: ' + filename + ' - ' + e.message);
+        post('blobAck', { filename: filename, ok: false, error: e.message });
+        throw e;
       }
+      return true;
     };
 
     // ── 由 RN 调用：注入并执行 pose.js ──
@@ -162,7 +231,7 @@ const MEDIAPIPE_HTML = `
       for (var j = 0; j < pts.length; j++) {
         keypoints.push({ x: pts[j].x, y: pts[j].y, score: pts[j].v, name: pts[j].n });
       }
-      lastPoseData = { keypoints: keypoints, score: 0.9 };
+      lastPoseData = { keypoints: keypoints, score: 0.9, frameWidth: W, frameHeight: H };
     }
 
     function drawVideoOnly() {
@@ -200,7 +269,25 @@ const MEDIAPIPE_HTML = `
           return;
         }
         if (shouldProcessPose && poseInstance) {
+          var now = Date.now();
+          if (now - lastInferenceTime < inferenceInterval) {
+            animFrameId = requestAnimationFrame(processFrame);
+            return;
+          }
+          lastInferenceTime = now;
+          var inferenceStartedAt = Date.now();
           poseInstance.send({ image: video }).then(function() {
+            perfSamples++;
+            perfTotalMs += Date.now() - inferenceStartedAt;
+            if (perfSamples >= 3) {
+              post('perf', {
+                inferenceMs: Math.round(perfTotalMs / perfSamples),
+                intervalMs: inferenceInterval,
+                isActive: isWorkoutActive
+              });
+              perfSamples = 0;
+              perfTotalMs = 0;
+            }
             animFrameId = requestAnimationFrame(processFrame);
           }).catch(function(err) {
             post('log', 'Pose send error: ' + (err.message || String(err)));
@@ -256,7 +343,7 @@ const MEDIAPIPE_HTML = `
         }
       });
       poseInstance.setOptions({
-        modelComplexity: 1,
+        modelComplexity: modelComplexity,
         smoothLandmarks: true,
         enableSegmentation: false,
         smoothSegmentation: false,
@@ -301,7 +388,7 @@ const MEDIAPIPE_HTML = `
         locateFile: function(file) { return activeCdnBase + file; }
       });
       poseInstance.setOptions({
-        modelComplexity: 1,
+        modelComplexity: modelComplexity,
         smoothLandmarks: true,
         enableSegmentation: false,
         smoothSegmentation: false,
@@ -368,12 +455,30 @@ const MEDIAPIPE_HTML = `
       try {
         var msg = JSON.parse(event.data);
         if (msg.type === 'setThrottle' && typeof msg.interval === 'number') {
-          sendInterval = Math.max(50, Math.min(300, msg.interval));
+          activeSendInterval = Math.max(50, Math.min(300, msg.interval));
+          if (isWorkoutActive) {
+            sendInterval = activeSendInterval;
+            inferenceInterval = activeSendInterval;
+          }
+        }
+        if (msg.type === 'setPreviewThrottle' && typeof msg.interval === 'number') {
+          previewSendInterval = Math.max(50, Math.min(300, msg.interval));
+          if (!isWorkoutActive) {
+            sendInterval = previewSendInterval;
+            inferenceInterval = previewSendInterval;
+          }
+        }
+        if (msg.type === 'setModelConfig' && typeof msg.modelComplexity === 'number') {
+          modelComplexity = msg.modelComplexity === 0 ? 0 : 1;
         }
         if (msg.type === 'setActive') {
-          shouldProcessPose = !!msg.active;
-          shouldSendPose = !!msg.active;
-          post('log', 'Active state changed: ' + msg.active);
+          isWorkoutActive = !!msg.active;
+          isPreviewEnabled = msg.preview !== false;
+          shouldProcessPose = isWorkoutActive || isPreviewEnabled;
+          shouldSendPose = shouldProcessPose;
+          sendInterval = isWorkoutActive ? activeSendInterval : previewSendInterval;
+          inferenceInterval = sendInterval;
+          post('log', 'Active state changed: ' + msg.active + ', preview: ' + isPreviewEnabled + ', interval: ' + sendInterval);
         }
       } catch (e) {}
     });
@@ -385,8 +490,24 @@ const MEDIAPIPE_HTML = `
 `;
 
 type CameraState = 'idle' | 'loading' | 'ready' | 'error';
+type BlobAckWaiter = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
 
-export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 }: CameraViewProps) {
+const BLOB_ACK_TIMEOUT_MS = 15000;
+
+export default function CameraView({
+  onPoseDetected,
+  isActive,
+  throttleMs = 100,
+  previewThrottleMs = 250,
+  enablePreviewPose = true,
+  maxAdaptiveIntervalMs = 220,
+  modelComplexity = 1,
+  onActivePoseIntervalChange,
+}: CameraViewProps) {
   const [cameraState, setCameraState] = useState<CameraState>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [loadingDetail, setLoadingDetail] = useState<string>('准备中...');
@@ -395,8 +516,25 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cameraStateRef = useRef<CameraState>('idle');
   const injectionDoneRef = useRef(false);
+  const blobAckWaitersRef = useRef<Map<string, BlobAckWaiter>>(new Map());
+  const activeIntervalRef = useRef(throttleMs);
+  const adaptiveRuntimeRef = useRef(createAdaptivePoseRuntime({
+    baseIntervalMs: throttleMs,
+    minIntervalMs: Math.min(60, throttleMs),
+    maxIntervalMs: maxAdaptiveIntervalMs,
+  }));
 
   useEffect(() => { cameraStateRef.current = cameraState; }, [cameraState]);
+
+  useEffect(() => {
+    adaptiveRuntimeRef.current.reset({
+      baseIntervalMs: throttleMs,
+      minIntervalMs: Math.min(60, throttleMs),
+      maxIntervalMs: maxAdaptiveIntervalMs,
+    });
+    activeIntervalRef.current = throttleMs;
+    onActivePoseIntervalChange?.(throttleMs);
+  }, [maxAdaptiveIntervalMs, onActivePoseIntervalChange, throttleMs]);
 
   const startTimeout = useCallback(() => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -409,6 +547,66 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
     }, 120000);
   }, []);
 
+  const rejectPendingBlobAcks = useCallback((reason: string) => {
+    blobAckWaitersRef.current.forEach((waiter) => {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(reason));
+    });
+    blobAckWaitersRef.current.clear();
+  }, []);
+
+  const waitForBlobAck = useCallback((filename: string): Promise<void> => {
+    const previous = blobAckWaitersRef.current.get(filename);
+    if (previous) {
+      clearTimeout(previous.timer);
+      previous.reject(new Error(`Superseded blob transfer: ${filename}`));
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        blobAckWaitersRef.current.delete(filename);
+        reject(new Error(`Timed out waiting for blob ack: ${filename}`));
+      }, BLOB_ACK_TIMEOUT_MS);
+
+      blobAckWaitersRef.current.set(filename, { resolve, reject, timer });
+    });
+  }, []);
+
+  const injectBlobFile = useCallback(async (
+    webView: WebView,
+    filename: string,
+    base64: string,
+    mimeType: string,
+  ): Promise<void> => {
+    const ackPromise = waitForBlobAck(filename);
+    webView.injectJavaScript(buildBlobBeginScript(filename, mimeType));
+    for (const chunk of splitBase64IntoChunks(base64)) {
+      webView.injectJavaScript(buildBlobAppendScript(filename, chunk));
+    }
+    webView.injectJavaScript(buildBlobCommitScript(filename));
+    await ackPromise;
+  }, [waitForBlobAck]);
+
+  const injectRuntimeControls = useCallback(() => {
+    webViewRef.current?.injectJavaScript(
+      'window.postMessage(JSON.stringify({type:"setModelConfig",modelComplexity:' + modelComplexity + '}), "*");' +
+      'window.postMessage(JSON.stringify({type:"setThrottle",interval:' + activeIntervalRef.current + '}), "*");' +
+      'window.postMessage(JSON.stringify({type:"setPreviewThrottle",interval:' + previewThrottleMs + '}), "*");' +
+      'window.postMessage(JSON.stringify({type:"setActive",active:' + (isActive ? 'true' : 'false') + ',preview:' + (enablePreviewPose ? 'true' : 'false') + '}), "*");'
+    );
+  }, [enablePreviewPose, isActive, modelComplexity, previewThrottleMs]);
+
+  const applyAdaptiveInterval = useCallback((nextInterval: number) => {
+    if (nextInterval === activeIntervalRef.current) return;
+    activeIntervalRef.current = nextInterval;
+    onActivePoseIntervalChange?.(nextInterval);
+    if (webViewRef.current && cameraStateRef.current === 'ready') {
+      webViewRef.current.injectJavaScript(
+        'window.postMessage(JSON.stringify({type:"setThrottle",interval:' + nextInterval + '}), "*");true;'
+      );
+    }
+  }, [onActivePoseIntervalChange]);
+
   // ── 注入本地缓存的 MediaPipe 文件到 WebView ──
   const injectLocalFiles = useCallback(async () => {
     const webView = webViewRef.current;
@@ -417,44 +615,37 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
     try {
       const files = mediaPipeAssetService.getFiles();
 
-      // 注入 blob URL（先注入所有资源文件，再注入 pose.js）
       for (const filename of files) {
-        if (filename === 'pose.js') continue; // pose.js 最后注入
-
-        try {
-          const base64 = await mediaPipeAssetService.getFileBase64(filename);
-          const mimeType = mediaPipeAssetService.getMimeType(filename);
-
-          // 分块注入大文件（避免 injectJavaScript 超长字符串问题）
-          // 每次注入一个文件
-          webView.injectJavaScript(
-            'window.__registerBlob("' + filename + '","' + base64 + '","' + mimeType + '");'
-          );
-        } catch (err) {
-          console.warn(`[CameraView] Failed to inject ${filename}:`, err);
-        }
+        if (filename === 'pose.js') continue;
+        const base64 = await mediaPipeAssetService.getFileBase64(filename);
+        const mimeType = mediaPipeAssetService.getMimeType(filename);
+        await injectBlobFile(webView, filename, base64, mimeType);
       }
 
       // 注入 pose.js（通过 eval 执行）
       try {
         const poseJsBase64 = await mediaPipeAssetService.getFileBase64('pose.js');
         webView.injectJavaScript(
-          'window.__evalPoseJs("' + poseJsBase64 + '");'
+          'window.__evalPoseJs(' + JSON.stringify(poseJsBase64) + ');true;'
         );
       } catch (err) {
         console.warn('[CameraView] Failed to inject pose.js:', err);
+        throw err;
       }
 
       // 通知 WebView 开始初始化
-      webView.injectJavaScript('init();');
+      webView.injectJavaScript('init();true;');
       injectionDoneRef.current = true;
     } catch (err) {
       console.warn('[CameraView] Local injection failed, falling back to CDN:', err);
+      rejectPendingBlobAcks('Local MediaPipe injection failed');
       // 本地注入失败 → 回退到 CDN 加载
-      webView.injectJavaScript('init();');
+      webView.injectJavaScript('init();true;');
       injectionDoneRef.current = true;
+    } finally {
+      mediaPipeAssetService.clearMemoryCache();
     }
-  }, []);
+  }, [injectBlobFile, rejectPendingBlobAcks]);
 
   // 组件挂载时：请求权限 → 准备缓存 → 显示 WebView
   useEffect(() => {
@@ -502,50 +693,74 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
 
     return () => {
       isMountedRef.current = false;
+      rejectPendingBlobAcks('CameraView unmounted');
+      mediaPipeAssetService.clearMemoryCache();
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
     };
-  }, [startTimeout]);
+  }, [rejectPendingBlobAcks, startTimeout]);
 
-  // 同步 isActive 到 WebView
+  // 同步运行参数到 WebView
   useEffect(() => {
     if (webViewRef.current && cameraState === 'ready') {
-      webViewRef.current.injectJavaScript(
-        'window.postMessage(JSON.stringify({type:"setActive",active:' + (isActive ? 'true' : 'false') + '}), "*");'
-      );
+      injectRuntimeControls();
     }
-  }, [isActive, cameraState]);
+  }, [cameraState, injectRuntimeControls]);
 
   // WebView 加载完成后注入本地文件
   const handleLoadEnd = useCallback(() => {
     if (injectionDoneRef.current) return; // 避免重复注入
 
     // 先发送控制参数
-    webViewRef.current?.injectJavaScript(
-      'window.postMessage(JSON.stringify({type:"setThrottle",interval:' + throttleMs + '}), "*");' +
-      'window.postMessage(JSON.stringify({type:"setActive",active:' + (isActive ? 'true' : 'false') + '}), "*");'
-    );
+    injectRuntimeControls();
 
     // 注入本地缓存的 MediaPipe 文件
     injectLocalFiles();
-  }, [throttleMs, isActive, injectLocalFiles]);
+  }, [injectLocalFiles, injectRuntimeControls]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
       switch (message.type) {
+        case 'blobAck': {
+          const filename = String(message.data?.filename || '');
+          const waiter = blobAckWaitersRef.current.get(filename);
+          if (waiter) {
+            blobAckWaitersRef.current.delete(filename);
+            clearTimeout(waiter.timer);
+            if (message.data?.ok) {
+              waiter.resolve();
+            } else {
+              waiter.reject(new Error(String(message.data?.error || `Blob transfer failed: ${filename}`)));
+            }
+          }
+          break;
+        }
         case 'pose':
           if (message.data) {
             onPoseDetected(message.data);
           }
           break;
+        case 'perf': {
+          const inferenceMs = Number(message.data?.inferenceMs);
+          const sampleIsActive = Boolean(message.data?.isActive);
+          if (Number.isFinite(inferenceMs)) {
+            const nextInterval = adaptiveRuntimeRef.current.recordSample({
+              inferenceMs,
+              isActive: sampleIsActive,
+            });
+            applyAdaptiveInterval(nextInterval);
+          }
+          break;
+        }
         case 'ready':
           if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
           }
+          mediaPipeAssetService.clearMemoryCache();
           if (isMountedRef.current) setCameraState('ready');
           break;
         case 'error':
@@ -553,6 +768,7 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
           }
+          mediaPipeAssetService.clearMemoryCache();
           console.warn('[CameraView] MediaPipe error:', message.data);
           if (isMountedRef.current) {
             setErrorMessage(String(message.data || '未知错误'));
@@ -571,7 +787,7 @@ export default function CameraView({ onPoseDetected, isActive, throttleMs = 100 
     } catch (err) {
       // 忽略非 JSON 消息
     }
-  }, [onPoseDetected]);
+  }, [applyAdaptiveInterval, onPoseDetected]);
 
   const handleOpenSettings = () => {
     if (Platform.OS === 'ios') {

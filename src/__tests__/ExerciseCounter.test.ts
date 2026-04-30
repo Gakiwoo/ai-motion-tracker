@@ -98,3 +98,43 @@ describe('ExerciseCounter getRate 公式验证', () => {
     expect(c.getRate()).toBe(20);
   });
 });
+
+describe('ExerciseCounter 时间窗口换算', () => {
+  class TimingCounter extends ExerciseCounter {
+    processFrame(_pose: any): void {
+      this.totalFrames++;
+    }
+
+    framesFor30fps(frames: number): number {
+      return this.framesAt30Fps(frames);
+    }
+
+    framesForMsPublic(ms: number): number {
+      return this.framesForMs(ms);
+    }
+  }
+
+  it('按当前帧间隔把 30fps 帧数换算成真实时间窗口', () => {
+    const c = new TimingCounter();
+
+    c.setFrameInterval(80);
+    expect(c.framesFor30fps(30)).toBe(13);
+    expect(c.framesFor30fps(10)).toBe(5);
+
+    c.setFrameInterval(100);
+    expect(c.framesFor30fps(30)).toBe(10);
+    expect(c.framesFor30fps(10)).toBe(4);
+
+    c.setFrameInterval(120);
+    expect(c.framesFor30fps(30)).toBe(9);
+    expect(c.framesFor30fps(10)).toBe(3);
+  });
+
+  it('毫秒窗口至少保留一帧并向上取整', () => {
+    const c = new TimingCounter();
+    c.setFrameInterval(120);
+
+    expect(c.framesForMsPublic(1)).toBe(1);
+    expect(c.framesForMsPublic(121)).toBe(2);
+  });
+});

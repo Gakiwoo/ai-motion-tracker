@@ -13,6 +13,8 @@ export interface Keypoint {
 export interface Pose {
   keypoints: Keypoint[];
   score?: number;
+  frameWidth?: number;
+  frameHeight?: number;
 }
 
 export interface WorkoutSession {
@@ -22,7 +24,7 @@ export interface WorkoutSession {
   count: number;
   duration: number;
   timestamp: number;
-  accuracy: number;
+  accuracy?: number;
 }
 
 export interface ExerciseConfig {

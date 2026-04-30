@@ -5,6 +5,7 @@ export interface User {
   email: string;
   nickname: string;
   isActive?: boolean;
+  isGuest?: boolean;
   createdAt: string;
 }
 
