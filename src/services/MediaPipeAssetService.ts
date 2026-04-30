@@ -8,12 +8,17 @@ import {
   deleteAsync,
   EncodingType,
 } from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   MediaPipeCachedAsset,
   createMediaPipeManifest,
   isMediaPipeCacheComplete,
 } from '../utils/mediaPipeManifest';
 import { runWithConcurrency } from '../utils/asyncPool';
+import {
+  buildMediaPipeCdnBases,
+  prioritizeMediaPipeCdnBases,
+} from '../utils/mediaPipeCdnPolicy';
 
 // MediaPipe 资源文件列表
 const MEDIAPIPE_FILES = [
@@ -28,14 +33,6 @@ const MEDIAPIPE_FILES = [
   'pose_web.binarypb',
 ] as const;
 
-// CDN 基础 URL 列表（gakiwoo.com 优先）
-const CDN_BASES = [
-  'https://gakiwoo.com/static/mediapipe/pose/',
-  'https://registry.npmmirror.com/@mediapipe/pose/0.5.1675469404/files/',
-  'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/',
-  'https://unpkg.com/@mediapipe/pose@0.5.1675469404/',
-];
-
 // 本地缓存目录
 const CACHE_DIR = documentDirectory + 'mediapipe/pose/';
 
@@ -45,6 +42,8 @@ const VERSION_FILE = CACHE_DIR + '.version';
 const MANIFEST_FILE = CACHE_DIR + '.manifest.json';
 const DOWNLOAD_CONCURRENCY = 3;
 const DOWNLOAD_MAX_ATTEMPTS = 3;
+const LAST_SUCCESSFUL_CDN_KEY = '@mediaPipe:lastSuccessfulCdn';
+const FAILED_CDN_KEY = '@mediaPipe:failedCdns';
 
 export type AssetProgressCallback = (message: string, progress?: number) => void;
 
@@ -69,12 +68,29 @@ class MediaPipeAssetService {
   private cachedBaseUrl: string | null = null;
   /** 内存 base64 缓存：避免每次进入训练页重复读磁盘 + atob 解码 */
   private base64Cache: Map<string, string> = new Map();
+  private ensurePromise: Promise<string> | null = null;
 
   /**
    * 确保所有 MediaPipe 文件已缓存到本地
    * 返回本地缓存目录的 file:// URL
    */
   async ensureCached(onProgress?: AssetProgressCallback): Promise<string> {
+    if (this.ensurePromise) {
+      onProgress?.('继续使用后台预加载的 AI 模型...', 0);
+      return this.ensurePromise;
+    }
+
+    this.ensurePromise = this.ensureCachedInternal(onProgress).finally(() => {
+      this.ensurePromise = null;
+    });
+    return this.ensurePromise;
+  }
+
+  preload(onProgress?: AssetProgressCallback): Promise<string> {
+    return this.ensureCached(onProgress);
+  }
+
+  private async ensureCachedInternal(onProgress?: AssetProgressCallback): Promise<string> {
     // 检查是否已缓存（且版本匹配）
     if (await this.isCacheValid()) {
       onProgress?.('加载本地 AI 模型...', 1);
@@ -91,24 +107,28 @@ class MediaPipeAssetService {
       await makeDirectoryAsync(CACHE_DIR, { intermediates: true });
     }
 
+    const cdnBases = await this.getPrioritizedCdnBases();
+
     // 逐个尝试 CDN，直到成功
     let successBase: string | null = null;
-    for (let i = 0; i < CDN_BASES.length; i++) {
-      const cdnBase = CDN_BASES[i];
+    for (let i = 0; i < cdnBases.length; i++) {
+      const cdnBase = cdnBases[i];
       const host = cdnBase.split('/')[2];
-      onProgress?.(`尝试 CDN ${i + 1}/${CDN_BASES.length}: ${host}`, (i + 1) / (CDN_BASES.length + 1));
+      onProgress?.(`尝试 CDN ${i + 1}/${cdnBases.length}: ${host}`, (i + 1) / (cdnBases.length + 1));
 
       try {
         await this.downloadAllFromCdn(cdnBase, (fileIdx, total) => {
           onProgress?.(
             `从 ${host} 下载中 (${fileIdx + 1}/${total})`,
-            (i * total + fileIdx + 1) / (CDN_BASES.length * total)
+            (i * total + fileIdx + 1) / (cdnBases.length * total)
           );
         });
         successBase = cdnBase;
+        await this.recordSuccessfulCdn(cdnBase);
         break;
       } catch (err) {
         console.warn(`[MediaPipeAsset] CDN ${host} failed:`, err);
+        await this.recordFailedCdn(cdnBase);
         await this.cleanIncompleteCacheFiles();
       }
     }
@@ -127,6 +147,48 @@ class MediaPipeAssetService {
     this.cachedBaseUrl = CACHE_DIR;
     onProgress?.('AI 模型就绪', 1);
     return CACHE_DIR;
+  }
+
+  private getEnvCdnBases(): string | undefined {
+    return (globalThis as unknown as {
+      process?: { env?: Record<string, string | undefined> };
+    }).process?.env?.EXPO_PUBLIC_MEDIAPIPE_CDN_BASES;
+  }
+
+  private async getPrioritizedCdnBases(): Promise<string[]> {
+    const [lastSuccessfulBase, failedBasesJson] = await Promise.all([
+      AsyncStorage.getItem(LAST_SUCCESSFUL_CDN_KEY),
+      AsyncStorage.getItem(FAILED_CDN_KEY),
+    ]);
+    const failedBases = this.parseStoredBases(failedBasesJson);
+    return prioritizeMediaPipeCdnBases(
+      buildMediaPipeCdnBases(this.getEnvCdnBases()),
+      { lastSuccessfulBase, failedBases },
+    );
+  }
+
+  private async recordSuccessfulCdn(cdnBase: string): Promise<void> {
+    await Promise.all([
+      AsyncStorage.setItem(LAST_SUCCESSFUL_CDN_KEY, cdnBase),
+      AsyncStorage.removeItem(FAILED_CDN_KEY),
+    ]);
+  }
+
+  private async recordFailedCdn(cdnBase: string): Promise<void> {
+    const failedBasesJson = await AsyncStorage.getItem(FAILED_CDN_KEY);
+    const failedBases = this.parseStoredBases(failedBasesJson);
+    const next = Array.from(new Set([cdnBase, ...failedBases])).slice(0, 4);
+    await AsyncStorage.setItem(FAILED_CDN_KEY, JSON.stringify(next));
+  }
+
+  private parseStoredBases(value: string | null): string[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+    } catch {
+      return [];
+    }
   }
 
   /**

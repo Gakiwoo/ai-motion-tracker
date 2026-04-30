@@ -33,9 +33,13 @@ export function useWorkout(exerciseType: ExerciseType) {
   const startTimeRef = useRef<number | null>(null);
   const prevCountRef = useRef(0);
 
+  const setFrameInterval = useCallback((intervalMs: number) => {
+    counter.setFrameInterval(intervalMs);
+  }, [counter]);
+
   useEffect(() => {
-    counter.setFrameInterval(getExerciseRuntimeProfile(exerciseType).activePoseIntervalMs);
-  }, [counter, exerciseType]);
+    setFrameInterval(getExerciseRuntimeProfile(exerciseType).activePoseIntervalMs);
+  }, [exerciseType, setFrameInterval]);
 
   // 定时模式：时间到自动停止
   useEffect(() => {
@@ -122,6 +126,7 @@ export function useWorkout(exerciseType: ExerciseType) {
     start,
     stop,
     switchMode,
+    setFrameInterval,
   };
 }
 

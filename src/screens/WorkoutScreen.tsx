@@ -39,6 +39,7 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
     start,
     stop,
     switchMode,
+    setFrameInterval,
   } = useWorkout(exerciseType);
 
   const [showTargetModal, setShowTargetModal] = useState(false);
@@ -262,6 +263,9 @@ export default function WorkoutScreen({ route }: WorkoutScreenProps) {
         isActive={isActive}
         throttleMs={runtimeProfile.activePoseIntervalMs}
         previewThrottleMs={runtimeProfile.previewPoseIntervalMs}
+        maxAdaptiveIntervalMs={runtimeProfile.maxAdaptiveIntervalMs}
+        modelComplexity={runtimeProfile.modelComplexity}
+        onActivePoseIntervalChange={setFrameInterval}
         enablePreviewPose={!isActive}
       />
       <View style={[styles.overlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">

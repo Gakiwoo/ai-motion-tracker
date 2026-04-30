@@ -6,6 +6,7 @@ describe('exercise runtime profile', () => {
 
     expect(profile.activePoseIntervalMs).toBe(80);
     expect(profile.previewPoseIntervalMs).toBeGreaterThan(profile.activePoseIntervalMs);
+    expect(profile.modelComplexity).toBe(0);
   });
 
   it('uses slower active inference for low-speed exercises to save battery', () => {
@@ -14,6 +15,7 @@ describe('exercise runtime profile', () => {
 
     expect(squat.activePoseIntervalMs).toBe(120);
     expect(sitUps.activePoseIntervalMs).toBe(120);
+    expect(squat.maxAdaptiveIntervalMs).toBeGreaterThan(squat.activePoseIntervalMs);
   });
 
   it('keeps every interval inside CameraView supported bounds', () => {
@@ -31,6 +33,8 @@ describe('exercise runtime profile', () => {
       expect(profile.activePoseIntervalMs).toBeLessThanOrEqual(300);
       expect(profile.previewPoseIntervalMs).toBeGreaterThanOrEqual(50);
       expect(profile.previewPoseIntervalMs).toBeLessThanOrEqual(300);
+      expect(profile.maxAdaptiveIntervalMs).toBeGreaterThanOrEqual(profile.activePoseIntervalMs);
+      expect(profile.modelComplexity === 0 || profile.modelComplexity === 1).toBe(true);
     });
   });
 });
