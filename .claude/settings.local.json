@@ -4,7 +4,14 @@
       "Bash(npx tsc:*)",
       "Bash(git rm:*)",
       "Bash(git add:*)",
-      "Bash(git rebase:*)"
+      "Bash(git rebase:*)",
+      "Bash(ssh-keyscan -p 22 -H codeup.aliyun.com)",
+      "Bash(ssh-keyscan -p 22 -t rsa,dsa,ecdsa,ed25519 codeup.aliyun.com)",
+      "Bash(ssh -T -p 22 git@codeup.aliyun.com)",
+      "Bash(ssh -vT -p 22 git@codeup.aliyun.com)",
+      "Bash(ssh-keygen -lf ~/.ssh/id_ed25519.pub)",
+      "Bash(ssh-keygen -lf ~/.ssh/id_ed25519 -E md5)",
+      "Bash(git commit:*)"
     ]
   }
 }
