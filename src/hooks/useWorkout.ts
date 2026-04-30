@@ -9,6 +9,7 @@ import { VerticalJumpCounter } from '../services/counters/VerticalJumpCounter';
 import { SitUpCounter } from '../services/counters/SitUpCounter';
 import StorageService from '../services/StorageService';
 import { DEFAULT_TARGETS, DEFAULT_DURATIONS } from '../constants/exerciseConfig';
+import { getExerciseRuntimeProfile } from '../utils/exerciseRuntime';
 
 export interface WorkoutState {
   isActive: boolean;
@@ -31,6 +32,10 @@ export function useWorkout(exerciseType: ExerciseType) {
   const [counter] = useState<ExerciseCounter>(() => createCounter(exerciseType));
   const startTimeRef = useRef<number | null>(null);
   const prevCountRef = useRef(0);
+
+  useEffect(() => {
+    counter.setFrameInterval(getExerciseRuntimeProfile(exerciseType).activePoseIntervalMs);
+  }, [counter, exerciseType]);
 
   // 定时模式：时间到自动停止
   useEffect(() => {
@@ -84,7 +89,6 @@ export function useWorkout(exerciseType: ExerciseType) {
       count: finalCount,
       duration,
       timestamp: Date.now(),
-      accuracy: 0.85,
     };
 
     setIsSaving(true);

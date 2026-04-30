@@ -14,7 +14,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { LoginScreenProps } from '../types/navigation';
 
 export default function LoginScreen({ navigation }: LoginScreenProps) {
-  const { login, isAuthenticating, error, clearError } = useAuth();
+  const { login, loginAsGuest, isAuthenticating, error, clearError } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -90,6 +90,15 @@ export default function LoginScreen({ navigation }: LoginScreenProps) {
             <Text style={styles.buttonText}>
               {isAuthenticating ? '登录中...' : '登录'}
             </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.localButton}
+            onPress={loginAsGuest}
+            activeOpacity={0.8}
+            disabled={isAuthenticating}
+          >
+            <Text style={styles.localButtonText}>游客模式，本地训练</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -189,6 +198,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.5,
+  },
+  localButton: {
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+    backgroundColor: '#FFFFFF',
+  },
+  localButtonText: {
+    color: '#3A3A3C',
+    fontSize: 15,
+    fontWeight: '700',
   },
   switchLink: {
     alignItems: 'center',

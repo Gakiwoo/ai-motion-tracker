@@ -56,10 +56,10 @@ export class JumpingJacksCounter extends ExerciseCounter {
   private cycleStartFrame = 0;
 
   // ── 判定阈值 ──
-  private readonly CONFIRM_FRAMES_OPEN = 3;    // 张开确认帧数
-  private readonly CONFIRM_FRAMES_CLOSED = 3;  // 收回确认帧数
-  private readonly MIN_CYCLE_FRAMES = 10;      // 最小周期帧数（约 0.33s@30fps）
-  private readonly MAX_CYCLE_FRAMES = 90;      // 最大周期帧数（约 3s@30fps）
+  private readonly CONFIRM_FRAMES_OPEN_30FPS = 3;
+  private readonly CONFIRM_FRAMES_CLOSED_30FPS = 3;
+  private readonly MIN_CYCLE_FRAMES_30FPS = 10;
+  private readonly MAX_CYCLE_FRAMES_30FPS = 90;
 
   // ── 统计 ──
   private foulCount = 0;
@@ -82,7 +82,16 @@ export class JumpingJacksCounter extends ExerciseCounter {
     this.armAngleFilter.reset(60);
     this.legSpreadFilter.reset(1.0);
     this.hipYFilter.reset(0.5);
+    this.resizeTimingWindows();
     this.baselineWindow.clear();
+  }
+
+  protected onFrameIntervalChanged(): void {
+    this.resizeTimingWindows();
+  }
+
+  private resizeTimingWindows(): void {
+    this.baselineWindow.resize(this.framesAt30Fps(30));
   }
 
   processFrame(pose: Pose): void {
@@ -202,13 +211,13 @@ export class JumpingJacksCounter extends ExerciseCounter {
     const legsOut = legSpread > this.legThreshold;
 
     if (armsUp && legsOut) {
-      if (this.phaseFrameCount >= this.CONFIRM_FRAMES_OPEN) {
+      if (this.phaseFrameCount >= this.framesAt30Fps(this.CONFIRM_FRAMES_OPEN_30FPS)) {
         this.transitionTo('open');
       }
     }
 
     // 超时未到达 → 回到 closed
-    if (this.phaseFrameCount > 30) {
+    if (this.phaseFrameCount > this.framesAt30Fps(30)) {
       this.transitionTo('closed');
     }
   }
@@ -229,7 +238,7 @@ export class JumpingJacksCounter extends ExerciseCounter {
     const legsIn = legSpread < this.legThreshold * 0.6;
 
     if (armsDown && legsIn) {
-      if (this.phaseFrameCount >= this.CONFIRM_FRAMES_CLOSED) {
+      if (this.phaseFrameCount >= this.framesAt30Fps(this.CONFIRM_FRAMES_CLOSED_30FPS)) {
         this.recordJack();
         this.transitionTo('closed');
       }
@@ -265,8 +274,8 @@ export class JumpingJacksCounter extends ExerciseCounter {
   private recordJack(): void {
     const cycleFrames = this.totalFrames - this.cycleStartFrame;
 
-    if (cycleFrames < this.MIN_CYCLE_FRAMES) return;
-    if (cycleFrames > this.MAX_CYCLE_FRAMES) return;
+    if (cycleFrames < this.framesAt30Fps(this.MIN_CYCLE_FRAMES_30FPS)) return;
+    if (cycleFrames > this.framesAt30Fps(this.MAX_CYCLE_FRAMES_30FPS)) return;
 
     this.count++;
   }

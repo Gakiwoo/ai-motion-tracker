@@ -3,12 +3,16 @@ import { WorkoutSession } from '../types';
 
 const STORAGE_KEY = '@workout_history';
 const MAX_RECENT_WORKOUTS = 10;
+const MAX_STORED_WORKOUTS = 1000;
 
 class StorageService {
   async saveWorkout(session: WorkoutSession): Promise<void> {
     const history = await this.getWorkoutHistory();
     history.push(session);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    const trimmedHistory = history
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(-MAX_STORED_WORKOUTS);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(trimmedHistory));
   }
 
   async getWorkoutHistory(): Promise<WorkoutSession[]> {

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User } from '../types/auth';
 import AuthService, { AuthError } from '../services/AuthService';
+import { createGuestUser } from '../utils/guestUser';
 
 // ── Context 类型 ──
 interface AuthContextType {
@@ -9,6 +10,7 @@ interface AuthContextType {
   isAuthenticating: boolean;  // 登录/注册请求中
   error: string | null;
   login: (email: string, password: string) => Promise<void>;
+  loginAsGuest: () => void;
   register: (email: string, password: string, nickname: string) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
@@ -22,6 +24,7 @@ const AuthContext = createContext<AuthContextType>({
   isAuthenticating: false,
   error: null,
   login: async () => {},
+  loginAsGuest: () => {},
   register: async () => {},
   logout: async () => {},
   clearError: () => {},
@@ -67,6 +70,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const loginAsGuest = useCallback(() => {
+    setError(null);
+    setUser(createGuestUser());
+  }, []);
+
   const register = useCallback(async (email: string, password: string, nickname: string) => {
     setIsAuthenticating(true);
     setError(null);
@@ -83,12 +91,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    if (user?.isGuest) {
+      setUser(null);
+      return;
+    }
     try {
       await AuthService.logout();
     } finally {
       setUser(null);
     }
-  }, []);
+  }, [user?.isGuest]);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -109,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, isAuthenticating, error, login, register, logout, clearError, updateUser, refreshUser }}
+      value={{ user, isLoading, isAuthenticating, error, login, loginAsGuest, register, logout, clearError, updateUser, refreshUser }}
     >
       {children}
     </AuthContext.Provider>

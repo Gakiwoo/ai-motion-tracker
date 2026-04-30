@@ -8,6 +8,12 @@ import {
   deleteAsync,
   EncodingType,
 } from 'expo-file-system/legacy';
+import {
+  MediaPipeCachedAsset,
+  createMediaPipeManifest,
+  isMediaPipeCacheComplete,
+} from '../utils/mediaPipeManifest';
+import { runWithConcurrency } from '../utils/asyncPool';
 
 // MediaPipe 资源文件列表
 const MEDIAPIPE_FILES = [
@@ -36,6 +42,9 @@ const CACHE_DIR = documentDirectory + 'mediapipe/pose/';
 // 缓存版本标记文件
 const CACHE_VERSION = '0.5.1675469404';
 const VERSION_FILE = CACHE_DIR + '.version';
+const MANIFEST_FILE = CACHE_DIR + '.manifest.json';
+const DOWNLOAD_CONCURRENCY = 3;
+const DOWNLOAD_MAX_ATTEMPTS = 3;
 
 export type AssetProgressCallback = (message: string, progress?: number) => void;
 
@@ -100,8 +109,7 @@ class MediaPipeAssetService {
         break;
       } catch (err) {
         console.warn(`[MediaPipeAsset] CDN ${host} failed:`, err);
-        // 清理可能的部分下载
-        await this.cleanCacheDir();
+        await this.cleanIncompleteCacheFiles();
       }
     }
 
@@ -109,8 +117,13 @@ class MediaPipeAssetService {
       throw new Error('所有 CDN 均下载失败，请检查网络连接后重试');
     }
 
-    // 写入版本标记
+    // 写入版本标记和文件清单，后续启动可发现半下载或 0 字节缓存
     await writeAsStringAsync(VERSION_FILE, CACHE_VERSION);
+    const files = await this.getCachedAssetInfo();
+    await writeAsStringAsync(
+      MANIFEST_FILE,
+      JSON.stringify(createMediaPipeManifest(CACHE_VERSION, files), null, 2)
+    );
     this.cachedBaseUrl = CACHE_DIR;
     onProgress?.('AI 模型就绪', 1);
     return CACHE_DIR;
@@ -166,21 +179,29 @@ class MediaPipeAssetService {
       const version = await readAsStringAsync(VERSION_FILE);
       if (version !== CACHE_VERSION) return false;
 
-      for (const file of MEDIAPIPE_FILES) {
-        const info = await getInfoAsync(CACHE_DIR + file);
-        if (!info.exists) return false;
-      }
-
-      return true;
+      return isMediaPipeCacheComplete({
+        expectedFiles: MEDIAPIPE_FILES,
+        expectedVersion: CACHE_VERSION,
+        version,
+        files: await this.getCachedAssetInfo(),
+      });
     } catch {
       return false;
     }
   }
 
-  /**
-   * 从指定 CDN 并行下载所有文件（Promise.all，约快 3x）
-   * onFileProgress 在每个文件完成后回调，total 固定
-   */
+  private async getCachedAssetInfo(): Promise<MediaPipeCachedAsset[]> {
+    const files: MediaPipeCachedAsset[] = [];
+    for (const file of MEDIAPIPE_FILES) {
+      const info = await getInfoAsync(CACHE_DIR + file);
+      files.push({
+        name: file,
+        size: info.exists && typeof info.size === 'number' ? info.size : 0,
+      });
+    }
+    return files;
+  }
+
   private async downloadAllFromCdn(
     cdnBase: string,
     onFileProgress: (fileIdx: number, total: number) => void
@@ -188,43 +209,69 @@ class MediaPipeAssetService {
     const total = MEDIAPIPE_FILES.length;
     let completed = 0;
 
-    await Promise.all(
-      MEDIAPIPE_FILES.map(async (filename) => {
-        const url = cdnBase + filename;
-        const dest = CACHE_DIR + filename;
+    await runWithConcurrency(MEDIAPIPE_FILES, DOWNLOAD_CONCURRENCY, async (filename) => {
+      if (await this.isCachedFileUsable(filename)) {
+        onFileProgress(completed++, total);
+        return;
+      }
 
-        try {
-          const result = await downloadAsync(url, dest);
-          if (!result) {
-            throw new Error(`Download returned null for ${filename}`);
-          }
-          const info = await getInfoAsync(dest);
-          if (!info.exists || (info.size !== undefined && info.size === 0)) {
-            throw new Error(`Downloaded file is empty: ${filename}`);
-          }
-          onFileProgress(completed++, total);
-        } catch (err) {
-          throw new Error(`Failed to download ${filename}: ${err}`);
-        }
-      })
-    );
+      await this.downloadFileWithRetry(cdnBase, filename);
+      onFileProgress(completed++, total);
+    });
   }
 
-  /**
-   * 清理缓存目录（下载失败时使用）
-   */
-  private async cleanCacheDir(): Promise<void> {
+  private async isCachedFileUsable(filename: string): Promise<boolean> {
+    const info = await getInfoAsync(CACHE_DIR + filename);
+    return info.exists && typeof info.size === 'number' && info.size > 0;
+  }
+
+  private async downloadFileWithRetry(cdnBase: string, filename: string): Promise<void> {
+    const url = cdnBase + filename;
+    const dest = CACHE_DIR + filename;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+      try {
+        await deleteAsync(dest, { idempotent: true });
+        const result = await downloadAsync(url, dest);
+        if (!result) {
+          throw new Error(`Download returned null for ${filename}`);
+        }
+        if (!(await this.isCachedFileUsable(filename))) {
+          throw new Error(`Downloaded file is empty: ${filename}`);
+        }
+        return;
+      } catch (err) {
+        lastError = err;
+        await deleteAsync(dest, { idempotent: true });
+      }
+    }
+
+    throw new Error(`Failed to download ${filename} after ${DOWNLOAD_MAX_ATTEMPTS} attempts: ${lastError}`, {
+      cause: lastError,
+    });
+  }
+
+  private async deleteInvalidFile(filename: string): Promise<void> {
+    const filePath = CACHE_DIR + filename;
+    const info = await getInfoAsync(filePath);
+    if (info.exists && (!('size' in info) || typeof info.size !== 'number' || info.size <= 0)) {
+      await deleteAsync(filePath, { idempotent: true });
+    }
+  }
+
+  private async cleanIncompleteCacheFiles(): Promise<void> {
     try {
       for (const file of MEDIAPIPE_FILES) {
-        const filePath = CACHE_DIR + file;
-        const info = await getInfoAsync(filePath);
-        if (info.exists) {
-          await deleteAsync(filePath, { idempotent: true });
-        }
+        await this.deleteInvalidFile(file);
       }
       const versionInfo = await getInfoAsync(VERSION_FILE);
       if (versionInfo.exists) {
         await deleteAsync(VERSION_FILE, { idempotent: true });
+      }
+      const manifestInfo = await getInfoAsync(MANIFEST_FILE);
+      if (manifestInfo.exists) {
+        await deleteAsync(MANIFEST_FILE, { idempotent: true });
       }
     } catch {
       // 忽略清理错误

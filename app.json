@@ -19,8 +19,7 @@
       "bundleIdentifier": "com.aimotion.tracker",
       "buildNumber": "1",
       "infoPlist": {
-        "NSCameraUsageDescription": "需要摄像头进行 AI 运动姿态检测，实时分析你的运动动作",
-        "NSMicrophoneUsageDescription": "运动训练录制时需要麦克风权限"
+        "NSCameraUsageDescription": "需要摄像头进行 AI 运动姿态检测，实时分析你的运动动作"
       }
     },
     "android": {
@@ -31,8 +30,7 @@
       "package": "com.aimotion.tracker",
       "versionCode": 1,
       "permissions": [
-        "CAMERA",
-        "RECORD_AUDIO"
+        "CAMERA"
       ]
     },
     "web": {
