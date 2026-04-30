@@ -11,8 +11,8 @@ const CONFIG = {
   host: 'gakiwoo.com',
   port: 22,
   username: 'root',
-  password: 'WUjiaqi1006!',
-  localPoseDir: path.join(__dirname, '../mediapipe-upload/pose'),
+  password: process.env.GAKIWOO_DEPLOY_PASSWORD,
+  localPoseDir: path.join(__dirname, '../../mediapipe-upload/pose'),
   remotePoseDir: '/var/www/gakiwoo/static/mediapipe/pose/',
   nginxConf: '/etc/nginx/sites-enabled/gakiwoo.com',
 };
@@ -53,12 +53,21 @@ function scpFile(conn, localPath, remotePath) {
 }
 
 async function main() {
-  const { host, port, username, password, localPoseDir, remotePoseDir, nginxConf } = CONFIG;
+  const { host, port, username, localPoseDir, remotePoseDir, nginxConf } = CONFIG;
+  let { password } = CONFIG;
+  if (!password) {
+    password = await rl('SSH password (or press Enter to use key/agent): ');
+  }
 
   console.log('=== 连接到', host, '===');
   const conn = new Client();
   await new Promise((resolve, reject) => {
-    conn.on('ready', resolve).on('error', reject).connect({ host, port, username, password });
+    conn.on('ready', resolve).on('error', reject).connect({
+      host,
+      port,
+      username,
+      ...(password ? { password } : {}),
+    });
   });
   console.log('  ✓ SSH 连接成功');
 

@@ -2,14 +2,14 @@
 # deploy-mediapipe.sh — 将 MediaPipe 静态文件部署到 gakiwoo.com
 #
 # 前提：本机已配置 SSH 到 gakiwoo.com
-# 用法：bash scripts/deploy-mediapipe.sh
+# 用法：bash scripts/deployment/deploy-mediapipe.sh
 
 set -e
 
 REMOTE_USER="root"  # 按实际修改
 REMOTE_HOST="gakiwoo.com"
 REMOTE_DIR="/var/www/gakiwoo/static/mediapipe/pose/"
-LOCAL_DIR="$(dirname "$0")/../mediapipe-upload/pose/"
+LOCAL_DIR="$(dirname "$0")/../../mediapipe-upload/pose/"
 
 echo "=== AI Sport MediaPipe 部署 ==="
 echo ""

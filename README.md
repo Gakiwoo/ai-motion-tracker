@@ -200,7 +200,7 @@ Downloaded files are injected into the WebView as **blob: URLs**, which are same
 
 ### 🗺️ Roadmap
 
-- [ ] Cloud sync for workout records ([design doc](./docs/cloud-sync-design.md))
+- [ ] Cloud sync for workout records ([design doc](./docs/architecture/cloud-sync-design.md))
 - [ ] Apple Watch / Wear OS companion
 - [ ] Exercise plan & reminder system
 - [ ] Social features (leaderboard, challenges)
@@ -383,7 +383,7 @@ src/
 
 ### 🗺️ 路线图
 
-- [ ] 训练记录云端同步（[设计方案](./docs/cloud-sync-design.md)）
+- [ ] 训练记录云端同步（[设计方案](./docs/architecture/cloud-sync-design.md)）
 - [ ] Apple Watch / Wear OS 配套应用
 - [ ] 运动计划 & 提醒系统
 - [ ] 社交功能（排行榜、挑战赛）

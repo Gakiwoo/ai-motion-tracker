@@ -1,6 +1,6 @@
 #!/bin/bash
 # nginx-mediapipe.sh — 为 gakiwoo.com 添加 MediaPipe location 配置
-# 使用方式: bash scripts/nginx-mediapipe.sh
+# 使用方式: bash scripts/deployment/nginx-mediapipe.sh
 
 set -e
 
